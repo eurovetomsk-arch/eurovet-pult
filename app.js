@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.6.0',
+  version: '0.6.1',
   tz: 'Asia/Omsk',
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
@@ -435,6 +435,25 @@ $('btnPasskey').onclick = async () => {
   $('loginMsg').textContent = 'Жду Face ID...';
   try { await pkLogin(); $('loginMsg').textContent = ''; await start(); }
   catch (e) { $('loginMsg').textContent = pkErr(e) + ' Можно войти паролем.'; pkPrefetch('auth'); }
+};
+
+// ---------- подписка календаря iPhone (функция pult-export) ----------
+// Ссылки содержат секретный токен: не храним и не показываем, только открываем
+async function calLinks(action) {
+  const { data, error } = await sb.functions.invoke('pult-export?action=' + action, { method: 'POST', body: {} });
+  if (error) { let m = error.message; try { m = (await error.context.json()).error || m; } catch { /* без тела */ } throw new Error(m); }
+  if (!data?.webcal) throw new Error(data?.error || 'нет ссылки');
+  return data;
+}
+$('btnCal').onclick = async () => {
+  $('calInfo').textContent = 'Открываю подписку...';
+  try { location.href = (await calLinks('links')).webcal; $('calInfo').textContent = 'iPhone предложит «Подписаться». Нажми его.'; }
+  catch (e) { $('calInfo').textContent = 'Не вышло: ' + e.message; }
+};
+$('btnCalRotate').onclick = async () => {
+  if (!confirm('Старая ссылка перестанет работать, подписку придётся сделать заново. Сменить?')) return;
+  try { await calLinks('rotate'); $('calInfo').textContent = 'Ссылка сменена. Удали старую подписку в настройках iPhone и нажми «Подписать календарь iPhone».'; }
+  catch (e) { $('calInfo').textContent = 'Не вышло: ' + e.message; }
 };
 
 // ---------- настройка панелей ----------
