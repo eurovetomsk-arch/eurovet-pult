@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Пульт Михаила</title>
+<meta name="theme-color" content="#be185d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Пульт">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<style>
+:root{--bg:#f6f4f5;--card:#fff;--ink:#1f1a1c;--mute:#6b6266;--line:#e7e1e4;--acc:#be185d;--red:#b91c1c;--redbg:#fee2e2;--org:#c2410c;--orgbg:#ffedd5;--ok:#15803d}
+@media (prefers-color-scheme:dark){:root{--bg:#141012;--card:#1f1a1c;--ink:#f3eef0;--mute:#a59ba0;--line:#342c30;--acc:#f472b6;--red:#f87171;--redbg:#3b1515;--org:#fb923c;--orgbg:#3a2210;--ok:#4ade80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+header{position:sticky;top:0;z-index:5;background:var(--bg);padding:12px 16px 8px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line)}
+header h1{font-size:20px;margin:0;flex:1}
+main{max-width:640px;margin:0 auto;padding:12px 16px 80px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:0 0 12px}
+.card h2{font-size:15px;margin:0 0 8px;color:var(--mute);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+.big{font-size:34px;font-weight:700;line-height:1}
+.row{display:flex;gap:12px;align-items:center}
+.grow{flex:1;min-width:0}
+.mute{color:var(--mute);font-size:13px}
+.banner{border-radius:10px;padding:8px 10px;margin:8px 0;font-size:14px}
+.banner.red{background:var(--redbg);color:var(--red)}
+.banner.org{background:var(--orgbg);color:var(--org)}
+ul{list-style:none;margin:0;padding:0}
+li{padding:8px 0;border-top:1px solid var(--line)}
+li:first-child{border-top:0}
+.day{font-weight:600;margin-top:8px}
+button,input,select,textarea{font:inherit;color:inherit}
+button{background:var(--acc);color:#fff;border:0;border-radius:10px;padding:10px 14px;cursor:pointer}
+button.ghost{background:transparent;color:var(--acc);border:1px solid var(--line);padding:6px 10px}
+button.small{padding:4px 8px;font-size:13px}
+input,select,textarea{width:100%;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.tag{display:inline-block;font-size:12px;border-radius:6px;padding:1px 6px;margin-left:6px}
+.tag.red{background:var(--redbg);color:var(--red)}
+.tag.org{background:var(--orgbg);color:var(--org)}
+.done{text-decoration:line-through;color:var(--mute)}
+.hidden{display:none!important}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.chk{width:26px;height:26px;border-radius:50%;border:2px solid var(--acc);background:transparent;padding:0;flex:none}
+#offline{font-size:12px;color:var(--org)}
+</style>
+</head>
+<body>
+<header>
+  <h1>Пульт</h1>
+  <span id="offline" class="hidden">нет сети, показаны сохранённые данные</span>
+  <button class="ghost small hidden" id="btnSettings" aria-label="Настройка панелей">Панели</button>
+</header>
+<main>
+  <section id="login" class="card hidden">
+    <h2>Вход</h2>
+    <p class="mute">Войти может только Михаил. Регистрация закрыта для всех остальных.</p>
+    <form id="loginForm">
+      <p><input type="email" id="email" autocomplete="username" placeholder="Почта" required></p>
+      <p><input type="password" id="password" autocomplete="current-password" placeholder="Пароль" minlength="10" required></p>
+      <p class="row"><button type="submit">Войти</button><button type="button" class="ghost" id="btnSignup">Создать вход (один раз)</button></p>
+    </form>
+    <p id="loginMsg" class="mute"></p>
+  </section>
+
+  <section id="board" class="hidden"></section>
+
+  <section id="settings" class="hidden">
+    <div class="card">
+      <h2>Панели</h2>
+      <p class="mute">Включай, скрывай и меняй порядок. Каждое сохранение становится новой версией, к любой можно вернуться.</p>
+      <ul id="modList"></ul>
+      <p class="row"><button id="btnSaveLayout">Сохранить версию</button><button class="ghost" id="btnCloseSettings">Назад</button></p>
+    </div>
+    <div class="card">
+      <h2>Добавить панель</h2>
+      <p><select id="newKind">
+        <option value="events">События по слову в названии</option>
+        <option value="note">Заметка (текст)</option>
+      </select></p>
+      <p><input id="newTitle" placeholder="Название панели"></p>
+      <p><input id="newParam" placeholder="Слово для поиска в событиях или текст заметки"></p>
+      <p><button class="ghost" id="btnAddModule">Добавить в список</button></p>
+    </div>
+    <div class="card">
+      <h2>Версии</h2>
+      <ul id="verList"></ul>
+    </div>
+    <div class="card">
+      <button class="ghost" id="btnLogout">Выйти</button>
+      <p class="mute" id="appVer"></p>
+    </div>
+  </section>
+</main>
+
+<script src="vendor/supabase.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
