@@ -55,6 +55,45 @@ input,select,textarea{width:100%;padding:10px;border:1px solid var(--line);borde
 .cal-today{border-color:var(--acc);font-weight:700}
 .cal-sel{background:var(--acc);color:#fff}
 .cal-sel i{color:#fff}
+/* 0.7: вкладки, переключатель Встречи | Напоминания, смахивания, шторка */
+main{padding-bottom:calc(96px + env(safe-area-inset-bottom))}
+.card h3{font-size:13px;margin:14px 0 2px;color:var(--mute);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+.tap{cursor:pointer}
+.chev{color:var(--mute);font-size:20px;flex:none}
+.hint{font-size:12px;color:var(--mute);text-align:center;margin:8px 0 0}
+#tabs{position:fixed;left:0;right:0;bottom:0;z-index:6;display:flex;background:var(--card);border-top:1px solid var(--line);padding:6px 0 calc(6px + env(safe-area-inset-bottom))}
+#tabs button{flex:1;background:transparent;color:var(--mute);border:0;border-radius:0;padding:2px 0;font-size:11px;position:relative}
+#tabs button b{display:block;font-size:22px;font-weight:400;line-height:1.2}
+#tabs button.on{color:var(--acc);font-weight:600}
+#tabs .badge{position:absolute;top:0;left:55%;background:var(--red);color:#fff;border-radius:8px;font-size:10px;padding:0 5px}
+.seg{display:flex;background:var(--line);border-radius:10px;padding:3px;margin-bottom:10px}
+.seg button{flex:1;background:transparent;color:var(--mute);border:0;padding:7px 0;border-radius:8px;font-weight:600;font-size:15px}
+.seg button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 2px rgba(0,0,0,.15)}
+.seg .n{display:inline-block;min-width:20px;font-size:12px;border-radius:9px;padding:0 6px;margin-left:4px;background:var(--bg);color:var(--mute)}
+.seg .on .n.m{background:var(--acc);color:#fff}.seg .on .n.r{background:var(--org);color:#fff}
+.cal-d.mode-r i{color:var(--org)}
+.cal-sel.mode-r{background:var(--org);border-color:var(--org)}
+.cal-sel.mode-r i{color:#fff}
+.rt{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.chk{border-color:var(--org);color:var(--org);font-weight:700}
+.chk.on{background:var(--org);color:#fff}
+.gdot{width:26px;height:26px;border-radius:50%;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:var(--mute);flex:none}
+li.swipe{position:relative;overflow:hidden;padding:0;margin:0 -14px}
+li.swipe .front{position:relative;z-index:1;background:var(--card);display:flex;gap:12px;align-items:center;padding:8px 14px;transition:transform .2s}
+li.swipe.open .front{transform:translateX(-210px)}
+li.swipe .acts{position:absolute;right:0;top:0;bottom:0;display:flex}
+li.swipe .acts button{width:70px;border-radius:0;padding:0;color:#fff;font-size:13px;font-weight:600}
+#sheet{position:fixed;inset:0;z-index:20}
+#sheet .dim{position:absolute;inset:0;background:rgba(0,0,0,.4)}
+#sheet .sheet-box{position:absolute;left:0;right:0;bottom:0;max-height:90vh;overflow:auto;background:var(--card);border-radius:16px 16px 0 0;padding:10px 16px calc(20px + env(safe-area-inset-bottom));max-width:640px;margin:0 auto}
+#sheet .grab{width:40px;height:5px;border-radius:3px;background:var(--line);margin:0 auto 12px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 10px}
+.chip{background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:16px;padding:6px 11px;font-size:14px}
+.chip.on{background:var(--orgbg);border-color:var(--org);color:var(--org);font-weight:600}
+.btns{display:flex;gap:8px;margin:6px 0}.btns button{flex:1}
+button.danger{color:var(--red)}
+a.btn{display:block;text-align:center;background:var(--acc);color:#fff;border-radius:10px;padding:10px 14px;text-decoration:none}
+body.noscroll{overflow:hidden}
 </style>
 </head>
 <body>
@@ -101,8 +140,9 @@ input,select,textarea{width:100%;padding:10px;border:1px solid var(--line);borde
     </div>
     <div class="card">
       <h2>Календарь на iPhone</h2>
-      <p class="mute">Напоминания из пульта (у которых есть время) появятся в «Календаре» iPhone отдельным календарём «Напоминания пульта» и будут обновляться сами. Пока напоминаний со временем нет, он пустой. Встречи туда не входят, они в Google Календаре. В настройках подписки выключи «Удалить предупреждения», иначе напоминания придут без сигнала.</p>
-      <p class="row"><button class="ghost" id="btnCal">Подписать календарь iPhone</button><button class="ghost small" id="btnCalRotate">Сменить ссылку</button></p>
+      <p class="mute">С версии 0.7 напоминания живут в Ассистенте и приходят уведомлением. В «Календаре» iPhone должны остаться только встречи. Если раньше подписывал календарь «Напоминания пульта», удали подписку: Настройки → Приложения → Календарь → Учётные записи календаря → Подписные календари → «Напоминания пульта» → Удалить учётную запись.</p>
+      <details><summary class="mute">Подписка для других программ (Outlook, Google)</summary>
+      <p class="row"><button class="ghost" id="btnCal">Подписать календарь</button><button class="ghost small" id="btnCalRotate">Сменить ссылку</button></p></details>
       <p class="mute" id="calInfo"></p>
     </div>
     <div class="card">
@@ -117,6 +157,8 @@ input,select,textarea{width:100%;padding:10px;border:1px solid var(--line);borde
     </div>
   </section>
 </main>
+<nav id="tabs" class="hidden" aria-label="Разделы"></nav>
+<div id="sheet" class="hidden"></div>
 
 <script src="vendor/supabase.js"></script>
 <script src="app.js"></script>

@@ -13,10 +13,11 @@ begin
   if owner is null then raise exception 'Сначала откройте пульт и создайте вход владельца, потом запустите этот файл'; end if;
   if j ->> 'format' is distinct from 'eurovet-pult-export/1' then raise exception 'Это не копия пульта (нет format eurovet-pult-export/1)'; end if;
 
-  insert into public.pult_tasks (id, owner_id, title, note, due_at, priority, done_at, created_at, updated_at, reminded_at)
+  insert into public.pult_tasks (id, owner_id, title, note, due_at, priority, done_at, created_at, updated_at, reminded_at, archived_at)
   overriding system value
   select r.id, owner, r.title, r.note, r.due_at, r.priority, r.done_at, r.created_at, r.updated_at,
-         coalesce(r.reminded_at, case when r.due_at < now() then now() end) -- старые напоминания не присылать повторно
+         coalesce(r.reminded_at, case when r.due_at < now() then now() end), -- старые напоминания не присылать повторно
+         r.archived_at
     from jsonb_populate_recordset(null::public.pult_tasks, coalesce(t -> 'pult_tasks', '[]')) r
   on conflict (id) do nothing;
   get diagnostics n_tasks = row_count;

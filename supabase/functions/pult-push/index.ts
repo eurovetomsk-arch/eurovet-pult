@@ -73,7 +73,7 @@ Deno.serve(async (req) => {
     // проверка доставки без входа владельца: тот же токен таймера
     if (new URL(req.url).searchParams.get("test") === "1") return json(await sendAll({ title: "Ассистент", body: "Проверка уведомлений: если видишь это, всё работает" }));
     const { data: due } = await admin.from("pult_tasks").select("id,title,due_at")
-      .is("done_at", null).is("reminded_at", null)
+      .is("done_at", null).is("archived_at", null).is("reminded_at", null)
       .lte("due_at", new Date().toISOString())
       .gte("due_at", new Date(Date.now() - 864e5).toISOString())
       .order("due_at").limit(20);

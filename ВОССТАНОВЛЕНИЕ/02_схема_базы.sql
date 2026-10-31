@@ -28,7 +28,8 @@ create table if not exists public.pult_tasks (
   done_at timestamp with time zone,
   created_at timestamp with time zone default now() not null,
   updated_at timestamp with time zone default now() not null,
-  reminded_at timestamp with time zone
+  reminded_at timestamp with time zone,
+  archived_at timestamp with time zone
 );
 
 create table if not exists public.pult_mail_snapshot (
