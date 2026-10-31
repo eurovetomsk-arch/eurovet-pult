@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.5.1',
+  version: '0.6.0',
   tz: 'Asia/Omsk',
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
@@ -31,6 +31,16 @@ const omskHour = () => {
 };
 const evDay = (e) => (e.all_day ? e.start.slice(0, 10) : dayKey(new Date(e.start)));
 const evTime = (e) => (e.all_day ? 'весь день' : hhmm(new Date(e.start)) + '-' + hhmm(new Date(e.end)));
+// Отметка встречи: «прошла» или «не было». Ключ = начало + название (у повторяющихся встреч начало разное)
+const evKey = (e) => (e.start + '|' + e.title).slice(0, 400);
+const evIndex = new Map();
+function evLine(e) {
+  const k = evKey(e), mk = state.marks?.[k];
+  evIndex.set(k, e);
+  const btn = mk ? `<button class="ghost small" data-unmark="${esc(k)}" aria-label="Снять отметку">${mk === 'прошла' ? '✓ прошла' : '✕ не было'}</button>`
+    : new Date(e.start) <= new Date() ? `<button class="ghost small" data-mark="прошла" data-k="${esc(k)}">✓ прошла</button><button class="ghost small" data-mark="не было" data-k="${esc(k)}" aria-label="Не было">✕</button>` : '';
+  return `<li class="row"><div class="grow${mk ? ' done' : ''}"><b>${esc(evTime(e))}</b> ${esc(e.title)}</div>${btn}</li>`;
+}
 
 // ---------- кэш для офлайна ----------
 const cache = {
@@ -38,13 +48,13 @@ const cache = {
   set(v) { try { localStorage.setItem('pult.cache', JSON.stringify(v)); } catch { /* нет места или приватный режим */ } },
 };
 
-let state = { layout: null, versions: [], tasks: [], mail: null, settings: null, cal: null, calError: null, orders: null, offline: false };
+let state = { layout: null, versions: [], tasks: [], mail: null, settings: null, cal: null, calError: null, orders: null, inbox: null, marks: {}, offline: false };
 
 // ---------- загрузка ----------
 async function load() {
   const old = cache.get();
   const since = new Date(Date.now() - 2 * 864e5).toISOString();
-  const [lay, tasks, mail, set, cal, orders] = await Promise.all([
+  const [lay, tasks, mail, set, cal, orders, inbox, marks] = await Promise.all([
     sb.from('pult_layout').select('version,created_at,note,modules').order('version', { ascending: false }).limit(20),
     sb.from('pult_tasks').select('*').or(`done_at.is.null,done_at.gt.${since}`).order('due_at', { ascending: true, nullsFirst: false }),
     sb.from('pult_mail_snapshot').select('*').order('taken_at', { ascending: false }).limit(1),
@@ -53,6 +63,9 @@ async function load() {
     sb.from('asst_orders').select('id,created_at,body,route,status,due_at,result,needs_yes,closed_at')
       .or(`closed_at.is.null,closed_at.gt.${new Date(Date.now() - 7 * 864e5).toISOString()}`)
       .order('created_at', { ascending: false }).limit(100),
+    sb.from('pult_inbox').select('id,created_at,body,via,taken_at,order_id,note')
+      .or(`taken_at.is.null,created_at.gt.${since}`).order('created_at', { ascending: false }).limit(50),
+    sb.from('pult_event_marks').select('event_key,mark').gte('start_at', new Date(Date.now() - 10 * 864e5).toISOString()),
   ]);
   const netFail = [lay, tasks, mail].some((r) => r.error && /fetch|network/i.test(r.error.message || ''));
   state.offline = netFail;
@@ -68,6 +81,8 @@ async function load() {
   state.mail = mail.data[0] || null;
   state.settings = set.data[0] || { stale_after_minutes: 120 };
   state.orders = orders.error ? null : orders.data; // таблицу ведёт ассистент; нет таблицы - панель покажет заглушку
+  state.inbox = inbox.error ? null : inbox.data;
+  state.marks = marks.error ? (old.state?.marks || {}) : Object.fromEntries(marks.data.map((x) => [x.event_key, x.mark]));
   if (cal.error || cal.data?.error) {
     state.calError = (cal.data && cal.data.error) || 'календарь не ответил';
     state.cal = old.state?.cal || null;
@@ -88,7 +103,7 @@ R.today = (m) => {
   return `<div class="row"><div class="grow"><div class="big">${evs.length}</div><div class="mute">событий сегодня</div></div>
     <div class="grow"><div class="big" style="color:${due.length ? 'var(--red)' : 'inherit'}">${due.length}</div><div class="mute">дел на сегодня и просрочено</div></div>
     <div class="grow"><div class="big">${state.mail ? state.mail.reply_count : '-'}</div><div class="mute">писем ответить</div></div></div>
-    ${evs.length ? '<ul style="margin-top:10px">' + evs.map((e) => `<li><b>${esc(evTime(e))}</b> ${esc(e.title)}</li>`).join('') + '</ul>' : ''}`;
+    ${evs.length ? '<ul style="margin-top:10px">' + evs.map(evLine).join('') + '</ul>' : ''}`;
 };
 
 function urgency(t) {
@@ -149,7 +164,7 @@ function grouped(evs, empty) {
   const keys = Object.keys(by).sort();
   const warn = state.calError ? `<div class="banner org">Показаны сохранённые данные от ${hhmm(new Date(state.cal.fetched_at))}: ${esc(state.calError)}</div>` : '';
   if (!keys.length) return warn + `<p class="mute">${empty}</p>`;
-  return warn + keys.map((k) => `<div class="day">${esc(dayTitle(k))}</div><ul>${by[k].map((e) => `<li><b>${esc(evTime(e))}</b> ${esc(e.title)}</li>`).join('')}</ul>`).join('')
+  return warn + keys.map((k) => `<div class="day">${esc(dayTitle(k))}</div><ul>${by[k].map(evLine).join('')}</ul>`).join('')
     + `<p class="mute">данные от ${hhmm(new Date(state.cal.fetched_at))}</p>`;
 }
 
@@ -162,8 +177,12 @@ function window7(days) {
 R.events = (m) => {
   const c = m.config || {};
   const word = (c.match || '').toLowerCase();
-  const evs = window7(c.days || 7).filter((e) => !word || e.title.toLowerCase().includes(word));
-  return grouped(evs, word ? `Нет событий со словом «${esc(c.match)}»` : 'Событий нет');
+  const fit = (e) => !word || e.title.toLowerCase().includes(word);
+  const evs = window7(c.days || 7).filter(fit);
+  const today = dayKey(new Date()), from = dayKey(new Date(Date.now() - 3 * 864e5));
+  const past = (state.cal?.events || []).filter((e) => fit(e) && !e.all_day && evDay(e) < today && evDay(e) >= from && !state.marks?.[evKey(e)]);
+  const ask = past.length ? `<div class="banner org">Отметь прошедшие встречи</div><ul>${past.map((e) => evLine(e).replace('<b>', `<b>${esc(dayTitle(evDay(e)))}, `)).join('')}</ul>` : '';
+  return ask + grouped(evs, word ? `Нет событий со словом «${esc(c.match)}»` : 'Событий нет');
 };
 
 R.shifts = (m) => {
@@ -192,7 +211,7 @@ R.calendar = (m) => {
   }
   const list = by[sel] || [];
   return `<div class="cal">${cells}</div><div class="day">${esc(dayTitle(sel))}</div>
-    <ul>${list.map((e) => `<li><b>${esc(evTime(e))}</b> ${esc(e.title)}</li>`).join('') || '<li class="mute">Событий нет</li>'}</ul>
+    <ul>${list.map(evLine).join('') || '<li class="mute">Событий нет</li>'}</ul>
     <p class="mute">данные от ${hhmm(new Date(state.cal.fetched_at))}</p>`;
 };
 $('board').addEventListener('click', (ev) => {
@@ -203,13 +222,20 @@ $('board').addEventListener('click', (ev) => {
 });
 
 // Поручения ассистента (таблица asst_orders, пишет только ассистент)
+let orderDraft = '', orderVia = 'текст';
+const orderForm = () => `<form data-form="order"><p><textarea name="body" rows="3" maxlength="2000" placeholder="Поручение: что сделать, кому, к какому сроку">${esc(orderDraft)}</textarea></p>
+    <p class="row"><button type="button" class="ghost" data-act="mic">🎤 Голосом</button><button>Поручить</button></p><p class="mute" id="micMsg"></p></form>`;
+function inboxList() {
+  const wait = (state.inbox || []).filter((x) => !x.taken_at || (!x.order_id && x.note));
+  return wait.length ? `<ul>${wait.map((x) => `<li><div>${esc(x.body)}</div><div class="mute">${x.via === 'голос' ? '🎤 ' : ''}${hhmm(new Date(x.created_at))} · ${x.taken_at ? esc(x.note || 'не взято') : 'ждёт разбора ассистентом'}</div></li>`).join('')}</ul>` : '';
+}
 R.orders = (m) => {
-  if (!state.orders) return '<p class="mute">Журнал поручений пока недоступен.</p>';
+  if (!state.orders) return orderForm() + inboxList() + '<p class="mute">Журнал поручений пока недоступен.</p>';
   const open = state.orders.filter((o) => !o.closed_at).sort((a, b) => (b.needs_yes - a.needs_yes) || String(a.due_at || '9').localeCompare(String(b.due_at || '9')));
   const closed = state.orders.filter((o) => o.closed_at);
-  const line = (o) => `<li><div class="row"><div class="grow" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(o.body)}</div>${o.needs_yes ? '<span class="tag red">нужно твоё да</span>' : ''}</div>
+  const line = (o) => `<li><div class="row"><div class="grow" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(o.body)}</div>${o.needs_yes ? '<span class="tag red">нужно твоё да</span>' : ''}<button class="ghost small" data-order-done="${o.id}">✓ Сделано</button></div>
       <div class="mute">${esc(o.route)} · ${esc(o.status)}${o.due_at ? ' · до ' + esc(dayTitle(dayKey(new Date(o.due_at)))) + ' ' + hhmm(new Date(o.due_at)) : ''}</div></li>`;
-  return `<div class="row"><div class="grow"><div class="big">${open.length}</div><div class="mute">открыто</div></div>
+  return orderForm() + inboxList() + `<div class="row"><div class="grow"><div class="big">${open.length}</div><div class="mute">открыто</div></div>
       <div class="grow"><div class="big" style="color:${open.some((o) => o.needs_yes) ? 'var(--red)' : 'inherit'}">${open.filter((o) => o.needs_yes).length}</div><div class="mute">ждут твоего да</div></div></div>
     <ul style="margin-top:8px">${open.map(line).join('') || '<li class="mute">Открытых поручений нет</li>'}</ul>
     ${closed.length ? `<details><summary class="mute">Закрыто за 7 дней: ${closed.length}</summary><ul>${closed.map((o) => `<li><div>${esc(o.body)}</div><div class="mute">${esc(o.status)}${o.result ? ' · ' + esc(o.result) : ''}</div></li>`).join('')}</ul></details>` : ''}`;
@@ -230,6 +256,63 @@ function renderBoard() {
     <p class="row"><button data-act="pk-on">Включить Face ID</button><button class="ghost" data-act="pk-later">Не сейчас</button></p></div>`);
   $('offline').classList.toggle('hidden', !state.offline);
 }
+
+// ---------- отметки встреч ----------
+$('board').addEventListener('click', async (ev) => {
+  const mk = ev.target.closest('[data-mark]'), un = ev.target.closest('[data-unmark]');
+  if (!mk && !un) return;
+  const k = (mk || un).dataset[mk ? 'k' : 'unmark'], prev = state.marks[k];
+  if (mk) {
+    const e = evIndex.get(k);
+    state.marks[k] = mk.dataset.mark; renderBoard();
+    const { error } = await sb.from('pult_event_marks').upsert({ event_key: k, title: e.title.slice(0, 300), start_at: e.start, mark: mk.dataset.mark });
+    if (error) { state.marks[k] = prev; renderBoard(); alert('Отметка не сохранилась: ' + error.message); }
+  } else {
+    delete state.marks[k]; renderBoard();
+    const { error } = await sb.from('pult_event_marks').delete().eq('event_key', k);
+    if (error) { state.marks[k] = prev; renderBoard(); alert('Не снялось: ' + error.message); }
+  }
+});
+
+// ---------- поручения ассистенту ----------
+$('board').addEventListener('click', async (ev) => {
+  const b = ev.target.closest('[data-order-done]');
+  if (!b) return;
+  const o = state.orders.find((x) => x.id === Number(b.dataset.orderDone));
+  if (!o || !confirm('Отметить сделанным: «' + o.body.slice(0, 80) + '»?')) return;
+  const { error } = await sb.from('asst_orders').update({ status: 'сделано' }).eq('id', o.id).is('closed_at', null);
+  if (error) return alert('Не отметилось: ' + error.message);
+  await refresh();
+});
+$('board').addEventListener('input', (ev) => { if (ev.target.closest('[data-form="order"]')) orderDraft = ev.target.value; });
+$('board').addEventListener('submit', async (ev) => {
+  const f = ev.target.closest('[data-form="order"]');
+  if (!f) return;
+  ev.preventDefault();
+  const body = f.body.value.trim();
+  if (!body) return;
+  const b = f.querySelector('button:not([type])'); b.disabled = true;
+  const { error } = await sb.from('pult_inbox').insert({ body, via: orderVia });
+  b.disabled = false;
+  if (error) return alert('Поручение не ушло: ' + error.message);
+  orderDraft = ''; orderVia = 'текст';
+  await refresh();
+});
+let rec = null;
+$('board').addEventListener('click', (ev) => {
+  if (!ev.target.closest('[data-act="mic"]')) return;
+  const ta = $('board').querySelector('[data-form="order"] textarea'), msg = $('micMsg');
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const fallback = () => { ta.focus(); msg.textContent = 'Нажми микрофон на клавиатуре iPhone и говори.'; orderVia = 'голос'; };
+  if (rec) { rec.stop(); return; }
+  if (!SR) return fallback();
+  const base = ta.value ? ta.value.trim() + ' ' : '';
+  rec = new SR(); rec.lang = 'ru-RU'; rec.interimResults = true; rec.continuous = true;
+  rec.onresult = (e) => { ta.value = base + Array.from(e.results).map((r) => r[0].transcript).join(''); orderDraft = ta.value; orderVia = 'голос'; };
+  rec.onerror = (e) => { rec = null; if (e.error !== 'no-speech' && e.error !== 'aborted') fallback(); };
+  rec.onend = () => { rec = null; msg.textContent = ta.value ? 'Проверь текст и нажми «Поручить».' : ''; };
+  try { rec.start(); msg.textContent = 'Слушаю. Нажми «🎤 Голосом» ещё раз, чтобы закончить.'; } catch { rec = null; fallback(); }
+});
 
 // ---------- дела ----------
 $('board').addEventListener('submit', async (ev) => {
