@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.6.3',
+  version: '0.6.4',
   tz: 'Asia/Omsk',
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
@@ -36,6 +36,16 @@ const evTime = (e) => (e.all_day ? 'весь день' : hhmm(new Date(e.start))
 // Отметка встречи: «прошла» или «не было». Ключ = начало + название (у повторяющихся встреч начало разное)
 const evKey = (e) => (e.start + '|' + e.title).slice(0, 400);
 const evIndex = new Map();
+// Отмеченные встречи («прошла» / «не было») убираем из списков и календаря пульта.
+// Только в пульте: Google Календарь не меняется (связь в одну сторону).
+let showMarked = false;
+const isMarked = (e) => !!state.marks?.[evKey(e)];
+const visible = (evs) => (showMarked ? evs : evs.filter((e) => !isMarked(e)));
+function hiddenNote(evs) {
+  const n = evs.filter(isMarked).length;
+  if (!n) return '';
+  return `<p class="mute">${showMarked ? 'Отмеченные показаны' : 'Скрыто отмеченных: ' + n} · <button class="ghost small" data-act="toggle-marked">${showMarked ? 'Скрыть' : 'Показать'}</button></p>`;
+}
 function evLine(e) {
   const k = evKey(e), mk = state.marks?.[k];
   evIndex.set(k, e);
@@ -101,11 +111,12 @@ const R = {};
 R.today = (m) => {
   const today = dayKey(new Date());
   const evs = (state.cal?.events || []).filter((e) => evDay(e) === today);
+  const left = evs.filter((e) => !isMarked(e)).length;
   const due = state.tasks.filter((t) => !t.done_at && t.due_at && dayKey(new Date(t.due_at)) <= today);
-  return `<div class="row"><div class="grow"><div class="big">${evs.length}</div><div class="mute">событий сегодня</div></div>
+  return `<div class="row"><div class="grow"><div class="big">${left}</div><div class="mute">событий сегодня${left < evs.length ? ' осталось' : ''}</div></div>
     <div class="grow"><div class="big" style="color:${due.length ? 'var(--red)' : 'inherit'}">${due.length}</div><div class="mute">дел на сегодня и просрочено</div></div>
     <div class="grow"><div class="big">${state.mail ? state.mail.reply_count : '-'}</div><div class="mute">писем ответить</div></div></div>
-    ${evs.length ? '<ul style="margin-top:10px">' + evs.map(evLine).join('') + '</ul>' : ''}`;
+    ${visible(evs).length ? '<ul style="margin-top:10px">' + visible(evs).map(evLine).join('') + '</ul>' : ''}${hiddenNote(evs)}`;
 };
 
 function urgency(t) {
@@ -161,12 +172,14 @@ R.mail = (m) => {
 function grouped(evs, empty) {
   if (!state.cal) return `<div class="banner org">Календарь ещё не загружен${state.calError ? ': ' + esc(state.calError) : ''}.</div>`;
   if (state.cal.configured === false) return '<div class="banner org">Календарь не подключён: нет секретной ссылки iCal.</div>';
+  const all = evs;
+  evs = visible(evs);
   const by = {};
   for (const e of evs) (by[evDay(e)] ||= []).push(e);
   const keys = Object.keys(by).sort();
   const warn = state.calError ? `<div class="banner org">Показаны сохранённые данные от ${hhmm(new Date(state.cal.fetched_at))}: ${esc(state.calError)}</div>` : '';
-  if (!keys.length) return warn + `<p class="mute">${empty}</p>`;
-  return warn + keys.map((k) => `<div class="day">${esc(dayTitle(k))}</div><ul>${by[k].map(evLine).join('')}</ul>`).join('')
+  if (!keys.length) return warn + `<p class="mute">${all.length ? 'Все встречи отмечены' : empty}</p>` + hiddenNote(all);
+  return warn + hiddenNote(all) + keys.map((k) => `<div class="day">${esc(dayTitle(k))}</div><ul>${by[k].map(evLine).join('')}</ul>`).join('')
     + `<p class="mute">данные от ${hhmm(new Date(state.cal.fetched_at))}</p>`;
 }
 
@@ -207,15 +220,19 @@ R.calendar = (m) => {
   let cells = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'].map((d) => `<div class="cal-h">${d}</div>`).join('');
   for (let i = 0; i < 35; i++) {
     const k = dayKey(new Date(monday.getTime() + i * 864e5));
-    const n = (by[k] || []).length;
+    const n = visible(by[k] || []).length;
     const cls = ['cal-d', k === today ? 'cal-today' : '', k === sel ? 'cal-sel' : '', k < today ? 'cal-past' : ''].join(' ');
     cells += `<button class="${cls}" data-day="${k}"><span>${Number(k.slice(8))}</span>${n ? `<i>${n > 3 ? '•••' : '•'.repeat(n)}</i>` : ''}</button>`;
   }
   const list = by[sel] || [];
   return `<div class="cal">${cells}</div><div class="day">${esc(dayTitle(sel))}</div>
-    <ul>${list.map(evLine).join('') || '<li class="mute">Событий нет</li>'}</ul>
+    <ul>${visible(list).map(evLine).join('') || `<li class="mute">${list.length ? 'Все встречи дня отмечены' : 'Событий нет'}</li>`}</ul>${hiddenNote(list)}
     <p class="mute">данные от ${hhmm(new Date(state.cal.fetched_at))}</p>`;
 };
+$('board').addEventListener('click', (ev) => {
+  if (!ev.target.closest('[data-act="toggle-marked"]')) return;
+  showMarked = !showMarked; renderBoard();
+});
 $('board').addEventListener('click', (ev) => {
   const d = ev.target.closest('[data-day]');
   if (!d) return;
