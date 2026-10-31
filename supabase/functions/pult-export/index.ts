@@ -4,6 +4,8 @@
 //   POST ?action=links  (владелец, JWT) - выдать ссылки с токеном; токен создаётся при первом вызове
 //   POST ?action=rotate (владелец, JWT) - сменить токен: старые ссылки перестают работать
 // Токен лежит только в pult_private (видит сервер). Функция только читает данные, ничего не меняет, кроме токена.
+// Устройства-копировщики (Mac) держат свой токен у себя, а в базе лежит только его SHA-256: pult_private key 'export_hash:<имя>'.
+// Так токен Mac не проходит ни через чат, ни через ИИ. Отозвать: заменить значение этой строки.
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 
 const CORS = {
@@ -17,6 +19,7 @@ const json = (body: unknown, status = 200) =>
 const URL_ = Deno.env.get("SUPABASE_URL")!;
 const admin = createClient(URL_, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, { auth: { persistSession: false } });
 
+const enc = new TextEncoder();
 const newToken = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), (b) => b.toString(16).padStart(2, "0")).join("");
 
 async function getToken(create: boolean) {
@@ -33,6 +36,22 @@ function sameToken(a: string, b: string) {
   return d === 0;
 }
 
+async function sha256hex(s: string) {
+  const d = await crypto.subtle.digest("SHA-256", enc.encode(s));
+  return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Подходит ли токен из ссылки: общий токен или токен одного из устройств (по хэшу)
+async function tokenOk(given: string) {
+  const main = await getToken(false);
+  if (main && sameToken(given, main)) return "main";
+  if (given.length < 32) return null;
+  const h = await sha256hex(given);
+  const { data } = await admin.from("pult_private").select("key,value").like("key", "export_hash:%");
+  const hit = (data ?? []).find((r) => sameToken(h, r.value));
+  return hit ? hit.key.slice("export_hash:".length) : null;
+}
+
 async function isOwner(req: Request) {
   const sb = createClient(URL_, Deno.env.get("SUPABASE_ANON_KEY")!, {
     global: { headers: { Authorization: req.headers.get("Authorization") ?? "" } },
@@ -44,7 +63,6 @@ async function isOwner(req: Request) {
 // ---------- ICS ----------
 const icsText = (s: string) => String(s ?? "").replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
 const icsTime = (iso: string) => new Date(iso).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
-const enc = new TextEncoder();
 // Строки ICS не длиннее 75 байт (RFC 5545), режем по символам, а не посреди буквы
 function fold(line: string) {
   const out: string[] = [];
@@ -115,9 +133,9 @@ Deno.serve(async (req) => {
   }
 
   if (req.method === "GET" && q.get("t")) {
-    const t = await getToken(false);
-    if (!t || !sameToken(q.get("t")!, t)) return json({ error: "нет доступа" }, 403);
-    await admin.from("pult_log").insert({ actor: "export", action: q.get("f") === "json" ? "json" : "ics", detail: { ua: (req.headers.get("user-agent") ?? "").slice(0, 80) } });
+    const who = await tokenOk(q.get("t")!);
+    if (!who) return json({ error: "нет доступа" }, 403);
+    await admin.from("pult_log").insert({ actor: "export", action: q.get("f") === "json" ? "json" : "ics", detail: { by: who, ua: (req.headers.get("user-agent") ?? "").slice(0, 80) } });
     return q.get("f") === "json" ? dump() : ics();
   }
 
