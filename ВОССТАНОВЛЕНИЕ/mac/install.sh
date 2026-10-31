@@ -19,5 +19,6 @@ launchctl bootout "gui/$(id -u)/ru.eurovet.recovery" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/ru.eurovet.recovery.plist"
 HASH=$(tr -d ' \n\r' < "$HOME/.eurovet/export_token" | shasum -a 256 | cut -d' ' -f1)
 echo "Отпечаток токена (не секрет): $HASH"
+mkdir -p "$HOME/Desktop/work/ВОССТАНОВЛЕНИЕ" && echo "$HASH" > "$HOME/Desktop/work/ВОССТАНОВЛЕНИЕ/отпечаток_mac.txt"
 [ "${NEW:-0}" = 1 ] && echo "Токен новый: занесите отпечаток в базу, см. 00_ЧИТАЙ_МЕНЯ.md, раздел 4"
 echo "Установлено: копия каждый день в 04:15 и при входе в систему. Журнал: ~/Desktop/work/ВОССТАНОВЛЕНИЕ/журнал.txt"
