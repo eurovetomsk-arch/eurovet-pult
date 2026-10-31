@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.2.0',
+  version: '0.3.0',
   tz: 'Asia/Omsk',
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
@@ -96,16 +96,30 @@ function urgency(t) {
   return '';
 }
 
+// Время напоминания вводится и показывается по Омску (UTC+6, без перехода на летнее время)
+const toLocal = (iso) => new Date(new Date(iso).getTime() + 6 * 36e5).toISOString().slice(0, 16);
+const fromLocal = (v) => (v ? new Date(v + ':00+06:00').toISOString() : null);
+
+function pushHint() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    return '<div class="banner org">Уведомления: открой пульт с иконки на экране «Домой» (Safari: Поделиться - На экран Домой).</div>';
+  }
+  if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && localStorage.getItem('pult.push') === '1') {
+    return '<p class="mute">Уведомления включены. <button class="ghost small" data-act="push-test">Проверить</button></p>';
+  }
+  return '<p><button class="ghost" data-act="push-on">Включить уведомления</button></p>';
+}
+
 R.tasks = (m) => {
   const items = state.tasks.map((t) => `<li class="row" data-task="${t.id}">
       <button class="chk" data-act="done" aria-label="Сделано">${t.done_at ? '✓' : ''}</button>
       <div class="grow"><div class="${t.done_at ? 'done' : ''}">${esc(t.title)}${urgency(t)}</div>
-        <div class="mute">${t.due_at ? 'срок ' + esc(dayTitle(dayKey(new Date(t.due_at)))) : 'без срока'}</div></div>
-      ${t.done_at ? '' : `<input type="date" class="small" data-act="move" value="${t.due_at ? dayKey(new Date(t.due_at)) : ''}" style="width:150px" aria-label="Перенести">`}
+        <div class="mute">${t.due_at ? esc(dayTitle(dayKey(new Date(t.due_at)))) + ', ' + hhmm(new Date(t.due_at)) + (t.reminded_at ? ' · уведомлено' : '') : 'без срока'}</div></div>
+      ${t.done_at ? '' : `<input type="datetime-local" class="small" data-act="move" value="${t.due_at ? toLocal(t.due_at) : ''}" style="width:190px" aria-label="Перенести">`}
     </li>`).join('');
-  return `<form class="row" data-form="task"><input class="grow" name="title" placeholder="Новое дело" maxlength="300" required>
-      <input type="date" name="due" style="width:150px"><button>+</button></form>
-    <ul style="margin-top:8px">${items || '<li class="mute">Дел нет</li>'}</ul>`;
+  return `${pushHint()}<form data-form="task"><p><input name="title" placeholder="Новое напоминание" maxlength="300" required></p>
+      <p class="row"><input type="datetime-local" name="due" class="grow" aria-label="Когда напомнить"><button>Добавить</button></p></form>
+    <ul style="margin-top:8px">${items || '<li class="mute">Напоминаний нет</li>'}</ul>`;
 };
 
 R.mail = (m) => {
@@ -204,7 +218,7 @@ $('board').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const title = f.title.value.trim();
   if (!title) return;
-  const due = f.due.value ? new Date(f.due.value + 'T09:00:00+06:00').toISOString() : null;
+  const due = fromLocal(f.due.value);
   const { error } = await sb.from('pult_tasks').insert({ title, due_at: due });
   if (error) return alert('Не сохранилось: ' + error.message);
   await refresh();
@@ -222,10 +236,33 @@ $('board').addEventListener('change', async (ev) => {
   const i = ev.target.closest('[data-act="move"]');
   if (!i) return;
   const id = i.closest('[data-task]').dataset.task;
-  const due = i.value ? new Date(i.value + 'T09:00:00+06:00').toISOString() : null;
+  const due = fromLocal(i.value);
   const { error } = await sb.from('pult_tasks').update({ due_at: due }).eq('id', id);
   if (error) return alert('Не сохранилось: ' + error.message);
   await refresh();
+});
+
+// ---------- уведомления ----------
+const b64ToBytes = (b) => Uint8Array.from(atob((b + '='.repeat((4 - (b.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+async function pushCall(action, body) {
+  const { data, error } = await sb.functions.invoke('pult-push?action=' + action, body ? { method: 'POST', body } : { method: 'GET' });
+  if (error || data?.error) throw new Error(data?.error || error.message);
+  return data;
+}
+$('board').addEventListener('click', async (ev) => {
+  const on = ev.target.closest('[data-act="push-on"]'), test = ev.target.closest('[data-act="push-test"]');
+  if (!on && !test) return;
+  try {
+    if (test) { const r = await pushCall('test', {}); alert(r.sent ? 'Отправлено, жди уведомление' : 'Подписок нет, включи уведомления заново'); return; }
+    if ((await Notification.requestPermission()) !== 'granted') return alert('Уведомления не разрешены. Разреши их в Настройках iPhone для «Пульт».');
+    const { key } = await pushCall('key');
+    const reg = await navigator.serviceWorker.ready;
+    const sub = (await reg.pushManager.getSubscription()) || (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) }));
+    await pushCall('subscribe', sub.toJSON());
+    try { localStorage.setItem('pult.push', '1'); } catch { /* приватный режим */ }
+    await pushCall('test', {});
+    renderBoard();
+  } catch (e) { alert('Не получилось включить уведомления: ' + e.message); }
 });
 
 // ---------- настройка панелей ----------
