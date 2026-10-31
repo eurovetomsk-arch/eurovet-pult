@@ -64,10 +64,10 @@ input,select,textarea{width:100%;padding:10px;border:1px solid var(--line);borde
 <main>
   <section id="login" class="card hidden">
     <h2>Вход</h2>
-    <p class="mute">Войти может только Михаил. Регистрация закрыта для всех остальных.</p>
+    <p class="mute">Войти может только Михаил. Вход нужен один раз на устройство: дальше пульт открывается сам, пока не нажмёшь «Выйти». На iPhone входи из значка на экране «Домой»: у него своя память, отдельно от Safari.</p>
     <form id="loginForm">
-      <p><input type="email" id="email" autocomplete="username" placeholder="Почта" required></p>
-      <p><input type="password" id="password" autocomplete="current-password" placeholder="Пароль" minlength="10" required></p>
+      <p><input type="email" id="email" name="email" autocomplete="username" placeholder="Почта" required></p>
+      <p><input type="password" id="password" name="password" autocomplete="current-password" placeholder="Пароль" minlength="10" required></p>
       <p class="row"><button type="submit">Войти</button><button type="button" class="ghost" id="btnSignup">Создать вход (один раз)</button></p>
     </form>
     <p id="loginMsg" class="mute"></p>

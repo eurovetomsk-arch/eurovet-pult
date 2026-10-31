@@ -351,8 +351,10 @@ $('loginForm').onsubmit = async (ev) => {
   if (error) { $('loginMsg').textContent = /confirm/i.test(error.message) ? 'Вход ещё не подтверждён. Напиши Архитектору: «подтверди вход в пульт».'
     : /invalid/i.test(error.message) ? 'Неверная почта или пароль. Если вход ещё не создан, нажми «Создать вход (один раз)».' : 'Не вышло: ' + error.message; return; }
   $('password').value = '';
+  try { localStorage.setItem('pult.email', $('email').value.trim()); } catch {}
   await start();
 };
+try { const e = localStorage.getItem('pult.email'); if (e) $('email').value = e; } catch {}
 $('btnSignup').onclick = async () => {
   const email = $('email').value.trim(), password = $('password').value;
   if (!email || password.length < 10) { $('loginMsg').textContent = 'Нужны почта и пароль не короче 10 знаков.'; return; }
