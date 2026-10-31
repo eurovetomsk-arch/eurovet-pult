@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.3.0',
+  version: '0.4.0',
   tz: 'Asia/Omsk',
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
@@ -38,18 +38,21 @@ const cache = {
   set(v) { try { localStorage.setItem('pult.cache', JSON.stringify(v)); } catch { /* нет места или приватный режим */ } },
 };
 
-let state = { layout: null, versions: [], tasks: [], mail: null, settings: null, cal: null, calError: null, offline: false };
+let state = { layout: null, versions: [], tasks: [], mail: null, settings: null, cal: null, calError: null, orders: null, offline: false };
 
 // ---------- загрузка ----------
 async function load() {
   const old = cache.get();
   const since = new Date(Date.now() - 2 * 864e5).toISOString();
-  const [lay, tasks, mail, set, cal] = await Promise.all([
+  const [lay, tasks, mail, set, cal, orders] = await Promise.all([
     sb.from('pult_layout').select('version,created_at,note,modules').order('version', { ascending: false }).limit(20),
     sb.from('pult_tasks').select('*').or(`done_at.is.null,done_at.gt.${since}`).order('due_at', { ascending: true, nullsFirst: false }),
     sb.from('pult_mail_snapshot').select('*').order('taken_at', { ascending: false }).limit(1),
     sb.from('pult_settings').select('stale_after_minutes').limit(1),
     sb.functions.invoke('pult-calendar?days=35', { method: 'GET' }).catch((e) => ({ error: e })),
+    sb.from('asst_orders').select('id,created_at,body,route,status,due_at,result,needs_yes,closed_at')
+      .or(`closed_at.is.null,closed_at.gt.${new Date(Date.now() - 7 * 864e5).toISOString()}`)
+      .order('created_at', { ascending: false }).limit(100),
   ]);
   const netFail = [lay, tasks, mail].some((r) => r.error && /fetch|network/i.test(r.error.message || ''));
   state.offline = netFail;
@@ -64,6 +67,7 @@ async function load() {
   state.tasks = tasks.data;
   state.mail = mail.data[0] || null;
   state.settings = set.data[0] || { stale_after_minutes: 120 };
+  state.orders = orders.error ? null : orders.data; // таблицу ведёт ассистент; нет таблицы - панель покажет заглушку
   if (cal.error || cal.data?.error) {
     state.calError = (cal.data && cal.data.error) || 'календарь не ответил';
     state.cal = old.state?.cal || null;
@@ -197,6 +201,19 @@ $('board').addEventListener('click', (ev) => {
   calDay = d.dataset.day;
   renderBoard();
 });
+
+// Поручения ассистента (таблица asst_orders, пишет только ассистент)
+R.orders = (m) => {
+  if (!state.orders) return '<p class="mute">Журнал поручений пока недоступен.</p>';
+  const open = state.orders.filter((o) => !o.closed_at).sort((a, b) => (b.needs_yes - a.needs_yes) || String(a.due_at || '9').localeCompare(String(b.due_at || '9')));
+  const closed = state.orders.filter((o) => o.closed_at);
+  const line = (o) => `<li><div class="row"><div class="grow" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(o.body)}</div>${o.needs_yes ? '<span class="tag red">нужно твоё да</span>' : ''}</div>
+      <div class="mute">${esc(o.route)} · ${esc(o.status)}${o.due_at ? ' · до ' + esc(dayTitle(dayKey(new Date(o.due_at)))) + ' ' + hhmm(new Date(o.due_at)) : ''}</div></li>`;
+  return `<div class="row"><div class="grow"><div class="big">${open.length}</div><div class="mute">открыто</div></div>
+      <div class="grow"><div class="big" style="color:${open.some((o) => o.needs_yes) ? 'var(--red)' : 'inherit'}">${open.filter((o) => o.needs_yes).length}</div><div class="mute">ждут твоего да</div></div></div>
+    <ul style="margin-top:8px">${open.map(line).join('') || '<li class="mute">Открытых поручений нет</li>'}</ul>
+    ${closed.length ? `<details><summary class="mute">Закрыто за 7 дней: ${closed.length}</summary><ul>${closed.map((o) => `<li><div>${esc(o.body)}</div><div class="mute">${esc(o.status)}${o.result ? ' · ' + esc(o.result) : ''}</div></li>`).join('')}</ul></details>` : ''}`;
+};
 
 R.stub = R.note = (m) => `<p class="mute">${esc((m.config || {}).text || '')}</p>`;
 
