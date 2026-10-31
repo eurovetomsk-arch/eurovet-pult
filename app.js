@@ -151,7 +151,8 @@ R.events = (m) => {
 R.shifts = (m) => {
   const word = ((m.config || {}).match || 'Смена').toLowerCase();
   const evs = window7(7).filter((e) => e.title.toLowerCase().includes(word));
-  return `<div class="big">${evs.length}</div><div class="mute">смен за 7 дней</div>` + grouped(evs, 'Смен нет');
+  const ready = state.cal && state.cal.configured !== false;
+  return (ready ? `<div class="big">${evs.length}</div><div class="mute">смен за 7 дней</div>` : '') + grouped(evs, 'Смен нет');
 };
 
 R.stub = R.note = (m) => `<p class="mute">${esc((m.config || {}).text || '')}</p>`;
