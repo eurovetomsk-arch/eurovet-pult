@@ -33,7 +33,8 @@ async function vapid() {
     pub = await getPrivate("vapid_public");
     priv = await getPrivate("vapid_private");
   }
-  webpush.setVapidDetails("mailto:noreply@eurovet-pult.invalid", pub!, priv!);
+  // Apple отвечает 403 BadJwtToken на выдуманный адрес в subject, поэтому здесь адрес пульта
+  webpush.setVapidDetails("https://eurovetomsk-arch.github.io", pub!, priv!);
   return pub!;
 }
 
@@ -48,7 +49,7 @@ async function sendAll(payload: { title: string; body: string }) {
     } catch (e) {
       const code = (e as { statusCode?: number }).statusCode;
       if (code === 404 || code === 410) { await admin.from("pult_push_subs").delete().eq("endpoint", s.endpoint); gone++; }
-      else await admin.from("pult_log").insert({ actor: "push", action: "error", detail: { code, msg: String((e as Error).message).slice(0, 200) } });
+      else await admin.from("pult_log").insert({ actor: "push", action: "error", detail: { code, msg: String((e as Error).message).slice(0, 200), body: String((e as { body?: string }).body ?? "").slice(0, 200) } });
     }
   }
   return { sent, gone, subs: subs?.length ?? 0 };
@@ -69,6 +70,8 @@ Deno.serve(async (req) => {
   if (action === "tick") {
     const token = await getPrivate("cron_token");
     if (!token || req.headers.get("x-pult-cron") !== token) return json({ error: "нет доступа" }, 403);
+    // проверка доставки без входа владельца: тот же токен таймера
+    if (new URL(req.url).searchParams.get("test") === "1") return json(await sendAll({ title: "Ассистент", body: "Проверка уведомлений: если видишь это, всё работает" }));
     const { data: due } = await admin.from("pult_tasks").select("id,title,due_at")
       .is("done_at", null).is("reminded_at", null)
       .lte("due_at", new Date().toISOString())
