@@ -100,7 +100,8 @@ async function ics() {
 
 // ---------- Команда iPhone: копия в приложении «Напоминания» ----------
 const PHONE = "reminders-iphone";
-const tagOf = (id: number) => `#ассистент-${id}`;
+// Метка с закрывающей скобкой: поиск «[ассистент-9]» не найдёт «[ассистент-90]»
+const tagOf = (id: number) => `[ассистент-${id}]`;
 // Время для iPhone: «2026-11-10 11:00» по Омску, Команды понимают его как дату
 const omsk = (iso: string) => new Date(new Date(iso).getTime() + 6 * 3600e3).toISOString().slice(0, 16).replace("T", " ");
 async function iphonePlan() {
@@ -130,15 +131,19 @@ async function iphoneDone(req: Request) {
     if (ct.includes("json")) { const b = await req.json(); raw = Array.isArray(b?.tags) ? b.tags.join(",") : String(b?.tags ?? ""); }
     else raw = String((await req.formData()).get("tags") ?? "");
   } catch { return json({ error: "нет поля tags" }, 400); }
-  const ids = [...new Set([...raw.matchAll(/#ассистент-(\d{1,12})/g)].map((m) => Number(m[1])))].slice(0, 300);
+  const ids = new Set([...raw.matchAll(/\[ассистент-(\d{1,12})\]/g)].map((m) => Number(m[1])));
+  // Отметки на iPhone копятся годами; сверяем только с открытыми напоминаниями, которые есть на телефоне
+  const { data: open, error: e1 } = await admin.from("pult_tasks").select("id").is("done_at", null).is("archived_at", null).not("phone_sig", "is", null).limit(2000);
+  if (e1) return json({ error: e1.message }, 500);
+  const hit = (open ?? []).map((t) => t.id).filter((id) => ids.has(id));
   let done = 0;
-  if (ids.length) {
-    const { data, error } = await admin.from("pult_tasks").update({ done_at: new Date().toISOString() }).in("id", ids).is("done_at", null).is("archived_at", null).select("id");
+  if (hit.length) {
+    const { data, error } = await admin.from("pult_tasks").update({ done_at: new Date().toISOString() }).in("id", hit).is("done_at", null).is("archived_at", null).select("id");
     if (error) return json({ error: error.message }, 500);
     done = data?.length ?? 0;
   }
-  await admin.from("pult_log").insert({ actor: "export", action: "iphone-done", detail: { seen: ids.length, done } });
-  return json({ seen: ids.length, done });
+  await admin.from("pult_log").insert({ actor: "export", action: "iphone-done", detail: { seen: ids.size, done } });
+  return json({ seen: ids.size, done });
 }
 
 // ---------- JSON ----------
