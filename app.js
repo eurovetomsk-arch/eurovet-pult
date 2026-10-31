@@ -264,7 +264,8 @@ $('loginForm').onsubmit = async (ev) => {
   ev.preventDefault();
   $('loginMsg').textContent = 'Вхожу...';
   const { error } = await sb.auth.signInWithPassword({ email: $('email').value.trim(), password: $('password').value });
-  if (error) { $('loginMsg').textContent = /confirm/i.test(error.message) ? 'Вход ещё не подтверждён. Напиши Архитектору: «подтверди вход в пульт».' : 'Не вышло: ' + error.message; return; }
+  if (error) { $('loginMsg').textContent = /confirm/i.test(error.message) ? 'Вход ещё не подтверждён. Напиши Архитектору: «подтверди вход в пульт».'
+    : /invalid/i.test(error.message) ? 'Неверная почта или пароль. Если вход ещё не создан, нажми «Создать вход (один раз)».' : 'Не вышло: ' + error.message; return; }
   $('password').value = '';
   await start();
 };
@@ -272,7 +273,12 @@ $('btnSignup').onclick = async () => {
   const email = $('email').value.trim(), password = $('password').value;
   if (!email || password.length < 10) { $('loginMsg').textContent = 'Нужны почта и пароль не короче 10 знаков.'; return; }
   const { data, error } = await sb.auth.signUp({ email, password });
-  if (error) { $('loginMsg').textContent = 'Не вышло: ' + error.message; return; }
+  if (error) {
+    $('loginMsg').textContent = /database error|unexpected/i.test(error.message)
+      ? 'Эта почта не разрешена. Вход создаётся только с почтой, которую Михаил назвал Архитектору.'
+      : 'Не вышло: ' + error.message;
+    return;
+  }
   $('password').value = '';
   if (data.session) return start();
   $('loginMsg').textContent = 'Вход создан. Напиши Архитектору: «подтверди вход в пульт», потом нажми «Войти».';
