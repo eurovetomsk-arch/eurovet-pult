@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.5.0',
+  version: '0.5.1',
   tz: 'Asia/Omsk',
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
@@ -409,14 +409,18 @@ function openSettings() {
   renderSettings();
   show('settings');
 }
-$('btnSettings').onclick = openSettings;
-$('btnCloseSettings').onclick = () => { renderBoard(); show('board'); };
+const closeSettings = () => { renderBoard(); show('board'); window.scrollTo(0, 0); };
+$('btnSettings').onclick = () => ($('settings').classList.contains('hidden') ? openSettings() : closeSettings());
+$('btnCloseSettings').onclick = closeSettings;
+$('btnBack').onclick = closeSettings;
 $('btnLogout').onclick = async () => { await sb.auth.signOut(); cache.set({}); show('login'); };
 
 // ---------- вход ----------
 function show(id) {
   for (const s of ['login', 'board', 'settings']) $(s).classList.toggle('hidden', s !== id);
-  $('btnSettings').classList.toggle('hidden', id !== 'board');
+  // в шапке: «Панели» на главном экране, «Назад» в настройке панелей
+  $('btnSettings').classList.toggle('hidden', id === 'login');
+  $('btnSettings').textContent = id === 'settings' ? '← Назад' : 'Панели';
 }
 $('loginForm').onsubmit = async (ev) => {
   ev.preventDefault();
@@ -471,5 +475,10 @@ async function start() {
 
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('board').classList.contains('hidden')) refresh(); });
 setInterval(() => { if (!document.hidden && !$('board').classList.contains('hidden')) refresh(); }, 5 * 6e4);
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+if ('serviceWorker' in navigator) {
+  const hadSW = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadSW && !reloaded) { reloaded = true; location.reload(); } });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((r) => r.update()).catch(() => {});
+}
 start();
