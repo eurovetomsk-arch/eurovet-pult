@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.6.1',
+  version: '0.6.2',
   tz: 'Asia/Omsk',
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
