@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.4.0',
+  version: '0.4.1',
   tz: 'Asia/Omsk',
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
@@ -355,6 +355,10 @@ $('loginForm').onsubmit = async (ev) => {
   await start();
 };
 try { const e = localStorage.getItem('pult.email'); if (e) $('email').value = e; } catch {}
+// iPhone: у значка на экране «Домой» своя память, вход из Safari туда не переходит
+if (/iPhone|iPad/.test(navigator.userAgent)) $('loginMsg').textContent = navigator.standalone
+  ? 'Войди здесь один раз: в значке вход запомнится и больше не спросится.'
+  : 'Ты в Safari. Вход здесь не перейдёт в значок на экране «Домой». Открой пульт из значка и войди там один раз.';
 $('btnSignup').onclick = async () => {
   const email = $('email').value.trim(), password = $('password').value;
   if (!email || password.length < 10) { $('loginMsg').textContent = 'Нужны почта и пароль не короче 10 знаков.'; return; }
