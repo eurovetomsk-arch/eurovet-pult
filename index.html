@@ -68,6 +68,7 @@ input,select,textarea{width:100%;padding:10px;border:1px solid var(--line);borde
     <form id="loginForm">
       <p><input type="email" id="email" name="email" autocomplete="username" placeholder="Почта" required></p>
       <p><input type="password" id="password" name="password" autocomplete="current-password" placeholder="Пароль" minlength="10" required></p>
+      <p class="row hidden" id="pkRow"><button type="button" id="btnPasskey">Войти по Face ID</button></p>
       <p class="row"><button type="submit">Войти</button><button type="button" class="ghost" id="btnSignup">Создать вход (один раз)</button></p>
     </form>
     <p id="loginMsg" class="mute"></p>
@@ -95,6 +96,12 @@ input,select,textarea{width:100%;padding:10px;border:1px solid var(--line);borde
     <div class="card">
       <h2>Версии</h2>
       <ul id="verList"></ul>
+    </div>
+    <div class="card">
+      <h2>Вход по Face ID</h2>
+      <p class="mute">Включи на каждом устройстве, где открываешь пульт. Пароль остаётся запасным.</p>
+      <p><button class="ghost" id="btnPkReg">Включить Face ID на этом устройстве</button></p>
+      <p class="mute" id="pkInfo"></p>
     </div>
     <div class="card">
       <button class="ghost" id="btnLogout">Выйти</button>

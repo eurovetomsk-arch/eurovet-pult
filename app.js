@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.4.1',
+  version: '0.5.0',
   tz: 'Asia/Omsk',
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
@@ -225,6 +225,9 @@ function renderBoard() {
     catch (e) { body = `<div class="banner red">Панель не отрисовалась: ${esc(e.message)}</div>`; }
     return `<div class="card" data-mod="${esc(m.key)}"><h2>${esc(m.title)}</h2>${body}</div>`;
   }).join('') || '<div class="card mute">Все панели скрыты. Нажми «Панели».</div>';
+  if (pkOK && !lsGet('pult.pk')) $('board').insertAdjacentHTML('afterbegin', `<div class="card"><h2>Вход по Face ID</h2>
+    <p class="mute">Если пульт когда-нибудь попросит войти, хватит взгляда вместо пароля.</p>
+    <p class="row"><button data-act="pk-on">Включить Face ID</button><button class="ghost" data-act="pk-later">Не сейчас</button></p></div>`);
   $('offline').classList.toggle('hidden', !state.offline);
 }
 
@@ -282,6 +285,75 @@ $('board').addEventListener('click', async (ev) => {
   } catch (e) { alert('Не получилось включить уведомления: ' + e.message); }
 });
 
+// ---------- вход по Face ID (passkey) ----------
+// Ключ Face ID хранится в связке ключей iCloud, поэтому работает и в Safari, и в значке «Домой».
+const pkOK = !!window.PublicKeyCredential;
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* приватный режим */ } };
+const bufToB64u = (b) => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const pk = { auth: null, reg: null }; // заранее полученные вызовы: Safari ждёт Face ID сразу после нажатия
+async function pkCall(action, body) {
+  const { data, error } = await sb.functions.invoke('pult-passkey?action=' + action, body ? { method: 'POST', body } : { method: 'GET' });
+  if (error) { let m = error.message; try { m = (await error.context.json()).error || m; } catch { /* без тела */ } throw new Error(m); }
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
+const pkFresh = (x) => x && Date.now() - x.at < 4 * 6e4;
+async function pkPrefetch(kind) {
+  if (!pkOK || !navigator.onLine) return;
+  try { pk[kind] = { o: await pkCall(kind + '-options'), at: Date.now() }; } catch { pk[kind] = null; }
+}
+const pkIds = (list) => (list || []).map((c) => ({ ...c, id: b64ToBytes(c.id) }));
+function credJSON(c) {
+  const r = c.response;
+  const out = { id: c.id, rawId: bufToB64u(c.rawId), type: c.type, clientExtensionResults: c.getClientExtensionResults?.() || {},
+    authenticatorAttachment: c.authenticatorAttachment || undefined, response: { clientDataJSON: bufToB64u(r.clientDataJSON) } };
+  if (r.attestationObject) { out.response.attestationObject = bufToB64u(r.attestationObject); out.response.transports = r.getTransports?.() || []; }
+  else {
+    out.response.authenticatorData = bufToB64u(r.authenticatorData);
+    out.response.signature = bufToB64u(r.signature);
+    if (r.userHandle) out.response.userHandle = bufToB64u(r.userHandle);
+  }
+  return out;
+}
+const pkDevice = () => /iPhone/.test(navigator.userAgent) ? 'iPhone' : /iPad/.test(navigator.userAgent) ? 'iPad' : /Mac/.test(navigator.userAgent) ? 'Mac' : 'устройство';
+async function pkRegister() {
+  const o = pkFresh(pk.reg) ? pk.reg.o : await pkCall('reg-options');
+  pk.reg = null;
+  const c = await navigator.credentials.create({ publicKey: { ...o, challenge: b64ToBytes(o.challenge),
+    user: { ...o.user, id: b64ToBytes(o.user.id) }, excludeCredentials: pkIds(o.excludeCredentials) } });
+  await pkCall('reg-verify', { credential: credJSON(c), device: pkDevice() });
+  lsSet('pult.pk', '1');
+}
+async function pkLogin() {
+  const o = pkFresh(pk.auth) ? pk.auth.o : await pkCall('auth-options');
+  pk.auth = null;
+  const c = await navigator.credentials.get({ publicKey: { ...o, challenge: b64ToBytes(o.challenge), allowCredentials: pkIds(o.allowCredentials) } });
+  const { token_hash } = await pkCall('auth-verify', credJSON(c));
+  const { error } = await sb.auth.verifyOtp({ token_hash, type: 'magiclink' });
+  if (error) throw new Error(error.message);
+  lsSet('pult.pk', '1');
+}
+const pkErr = (e) => e?.name === 'NotAllowedError' ? 'Face ID отменён или не сработал.'
+  : e?.name === 'InvalidStateError' ? 'На этом устройстве Face ID для пульта уже включён.' : 'Не вышло: ' + (e?.message || e);
+$('board').addEventListener('click', async (ev) => {
+  const on = ev.target.closest('[data-act="pk-on"]'), later = ev.target.closest('[data-act="pk-later"]');
+  if (later) { lsSet('pult.pk', 'later'); renderBoard(); return; }
+  if (!on) return;
+  try { await pkRegister(); alert('Готово: Face ID включён. Пароль остаётся запасным.'); }
+  catch (e) { if (e?.name === 'InvalidStateError') lsSet('pult.pk', '1'); alert(pkErr(e)); pkPrefetch('reg'); }
+  renderBoard();
+});
+$('btnPkReg').onclick = async () => {
+  try { await pkRegister(); $('pkInfo').textContent = 'Face ID включён на этом устройстве.'; }
+  catch (e) { $('pkInfo').textContent = pkErr(e); pkPrefetch('reg'); }
+};
+$('btnPasskey').onclick = async () => {
+  $('loginMsg').textContent = 'Жду Face ID...';
+  try { await pkLogin(); $('loginMsg').textContent = ''; await start(); }
+  catch (e) { $('loginMsg').textContent = pkErr(e) + ' Можно войти паролем.'; pkPrefetch('auth'); }
+};
+
 // ---------- настройка панелей ----------
 let draft = [];
 function renderSettings() {
@@ -331,6 +403,8 @@ $('verList').addEventListener('click', async (ev) => {
   openSettings();
 });
 function openSettings() {
+  pkPrefetch('reg');
+  if (pkOK) pkCall('count').then((r) => { $('pkInfo').textContent = r.count ? `Face ID включён на устройствах: ${r.count}.` : 'Face ID пока не включён.'; }).catch(() => {});
   draft = JSON.parse(JSON.stringify(state.layout?.modules || []));
   renderSettings();
   show('settings');
@@ -355,6 +429,7 @@ $('loginForm').onsubmit = async (ev) => {
   await start();
 };
 try { const e = localStorage.getItem('pult.email'); if (e) $('email').value = e; } catch {}
+$('pkRow').classList.toggle('hidden', !pkOK);
 // iPhone: у значка на экране «Домой» своя память, вход из Safari туда не переходит
 if (/iPhone|iPad/.test(navigator.userAgent)) $('loginMsg').textContent = navigator.standalone
   ? 'Войди здесь один раз: в значке вход запомнится и больше не спросится.'
@@ -385,8 +460,10 @@ async function start() {
   if (!data.session) {
     if (old.state && !navigator.onLine) { state = old.state; state.offline = true; renderBoard(); show('board'); return; }
     show('login');
+    pkPrefetch('auth');
     return;
   }
+  if (pkOK && !lsGet('pult.pk')) pkPrefetch('reg');
   if (old.state) { state = { ...old.state, offline: false }; renderBoard(); }
   show('board');
   await refresh();
