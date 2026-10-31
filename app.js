@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.7.0',
+  version: '0.7.1',
   tz: 'Asia/Omsk',
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
@@ -677,6 +677,28 @@ $('btnCalRotate').onclick = async () => {
   catch (e) { $('calInfo').textContent = 'Не вышло: ' + e.message; }
 };
 
+// ---------- Команда iPhone: ссылки с ключом (показываем, не храним) ----------
+$('btnPhone').onclick = async () => {
+  if (!$('phoneLinks').classList.contains('hidden') || lsGet('pult.phoneLink')) {
+    if (!confirm('Старые ссылки в Команде перестанут работать, их надо будет заменить. Выдать новые?')) return;
+  }
+  $('phoneInfo').textContent = 'Получаю...';
+  try {
+    const { data, error } = await sb.functions.invoke('pult-export?action=iphone-link', { method: 'POST', body: {} });
+    if (error || !data?.get) throw new Error(data?.error || error?.message || 'нет ссылки');
+    $('phoneGet').value = data.get; $('phoneDone').value = data.done;
+    $('phoneLinks').classList.remove('hidden'); lsSet('pult.phoneLink', '1');
+    $('phoneInfo').textContent = 'Готово. Скопируй по очереди и вставь в Команду.';
+  } catch (e) { $('phoneInfo').textContent = 'Не вышло: ' + e.message; }
+};
+document.addEventListener('click', async (ev) => {
+  const b = ev.target.closest('[data-copy]');
+  if (!b) return;
+  const i = $(b.dataset.copy);
+  try { await navigator.clipboard.writeText(i.value); b.textContent = 'Скопировано'; }
+  catch { i.select(); b.textContent = 'Выдели и скопируй'; }
+});
+
 // ---------- настройка панелей ----------
 let draft = [];
 function renderSettings() {
@@ -732,7 +754,7 @@ function openSettings() {
   renderSettings();
   show('settings');
 }
-const closeSettings = () => { renderBoard(); show('board'); window.scrollTo(0, 0); };
+const closeSettings = () => { $('phoneGet').value = $('phoneDone').value = ''; $('phoneLinks').classList.add('hidden'); renderBoard(); show('board'); window.scrollTo(0, 0); };
 $('btnSettings').onclick = () => ($('settings').classList.contains('hidden') ? openSettings() : closeSettings());
 $('btnCloseSettings').onclick = closeSettings;
 $('btnBack').onclick = closeSettings;

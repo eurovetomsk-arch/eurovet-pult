@@ -146,6 +146,16 @@ body.noscroll{overflow:hidden}
       <p class="mute" id="calInfo"></p>
     </div>
     <div class="card">
+      <h2>Напоминания на iPhone</h2>
+      <p class="mute">Команда iPhone «Ассистент» копирует напоминания в приложение «Напоминания» (список «Ассистент»), а отмеченные там как выполненные отмечает здесь. Две ссылки ниже вставляются в Команду по инструкции. В них ключ: никому не пересылай. Новая выдача отключает старые ссылки.</p>
+      <p><button class="ghost" id="btnPhone">Получить ссылки для Команды</button></p>
+      <div id="phoneLinks" class="hidden">
+        <p class="mute">1. Ссылка «Получить»</p><p class="row"><input id="phoneGet" readonly class="grow"><button class="ghost small" data-copy="phoneGet">Скопировать</button></p>
+        <p class="mute">2. Ссылка «Выполнено»</p><p class="row"><input id="phoneDone" readonly class="grow"><button class="ghost small" data-copy="phoneDone">Скопировать</button></p>
+      </div>
+      <p class="mute" id="phoneInfo"></p>
+    </div>
+    <div class="card">
       <h2>Вход по Face ID</h2>
       <p class="mute">Включи на каждом устройстве, где открываешь пульт. Пароль остаётся запасным.</p>
       <p><button class="ghost" id="btnPkReg">Включить Face ID на этом устройстве</button></p>
