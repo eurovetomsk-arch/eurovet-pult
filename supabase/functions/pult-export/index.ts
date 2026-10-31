@@ -79,7 +79,7 @@ function fold(line: string) {
 async function ics() {
   const from = new Date(Date.now() - 2 * 864e5).toISOString();
   const { data: tasks } = await admin.from("pult_tasks").select("id,title,note,due_at,priority,updated_at")
-    .is("done_at", null).not("due_at", "is", null).gte("due_at", from).order("due_at").limit(500);
+    .is("done_at", null).is("archived_at", null).not("due_at", "is", null).gte("due_at", from).order("due_at").limit(500);
   const L = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//EUROVET//Pult export//RU", "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
     "X-WR-CALNAME:Напоминания пульта", "X-WR-TIMEZONE:Asia/Omsk", "REFRESH-INTERVAL;VALUE=DURATION:PT1H", "X-PUBLISHED-TTL:PT1H"];
   for (const t of tasks ?? []) {

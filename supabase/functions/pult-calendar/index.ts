@@ -49,8 +49,21 @@ Deno.serve(async (req) => {
   }
   for (const ex of exceptions) masters.get(ex.uid)?.relateException(ex);
 
-  const out: { title: string; start: string; end: string; all_day: boolean }[] = [];
-  const push = (ev: ICAL.Event, s: ICAL.Time, e: ICAL.Time) => {
+  // Ссылка «Изменить в Google Календаре»: eid = base64url("<id события> <календарь>").
+  // Календарь берём из пути секретной ссылки (/calendar/ical/<календарь>/private-.../basic.ics); сам секрет наружу не уходит.
+  let calId = "";
+  try { calId = decodeURIComponent(new URL(url).pathname.split("/")[3] ?? ""); } catch { /* не Google */ }
+  const b64u = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const editLink = (ev: ICAL.Event, rid: ICAL.Time | null) => {
+    const uid = String(ev.uid ?? "");
+    if (!calId || !uid.endsWith("@google.com")) return null;
+    let id = uid.slice(0, -"@google.com".length);
+    if (rid) id += "_" + (rid.isDate ? rid.toString().replace(/-/g, "") : rid.toJSDate().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, ""));
+    return "https://www.google.com/calendar/event?eid=" + b64u(id + " " + calId.replace(/@gmail\.com$/, "@m")); // так пишет сам Google
+  };
+
+  const out: { title: string; start: string; end: string; all_day: boolean; link: string | null; recurring: boolean }[] = [];
+  const push = (ev: ICAL.Event, s: ICAL.Time, e: ICAL.Time, rid: ICAL.Time | null = null) => {
     if (ev.component.getFirstPropertyValue("status") === "CANCELLED") return;
     const sj = s.toJSDate(), ej = e.toJSDate();
     if (ej < from || sj > to) return;
@@ -59,6 +72,8 @@ Deno.serve(async (req) => {
       start: s.isDate ? s.toString() : sj.toISOString(),
       end: e.isDate ? e.toString() : ej.toISOString(),
       all_day: s.isDate,
+      link: editLink(ev, rid),
+      recurring: rid !== null,
     });
   };
 
@@ -72,7 +87,7 @@ Deno.serve(async (req) => {
     for (let t = it.next(); t && n < 2000; t = it.next(), n++) {
       if (t.toJSDate() > to) break;
       const d = ev.getOccurrenceDetails(t);
-      push(d.item, d.startDate, d.endDate);
+      push(d.item, d.startDate, d.endDate, d.recurrenceId ?? t);
     }
   }
   out.sort((a, b) => a.start.localeCompare(b.start));
