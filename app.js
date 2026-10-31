@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.6.2',
+  version: '0.6.3',
   tz: 'Asia/Omsk',
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
@@ -13,6 +13,8 @@ const CFG = {
 
 const sb = supabase.createClient(CFG.url, CFG.key, { auth: { persistSession: true, autoRefreshToken: true } });
 const $ = (id) => document.getElementById(id);
+// текст ассистента: экранируем, потом делаем ссылки кликабельными
+const linkify = (s) => esc(s).replace(/https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"]/g, (u) => `<a href="${u}" target="_blank" rel="noopener">${u.length > 60 ? u.slice(0, 57) + '…' : u}</a>`);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // ---------- время по Омску ----------
@@ -227,18 +229,18 @@ const orderForm = () => `<form data-form="order"><p><textarea name="body" rows="
     <p class="row"><button type="button" class="ghost" data-act="mic">🎤 Голосом</button><button>Поручить</button></p><p class="mute" id="micMsg"></p></form>`;
 function inboxList() {
   const wait = (state.inbox || []).filter((x) => !x.taken_at || (!x.order_id && x.note));
-  return wait.length ? `<ul>${wait.map((x) => `<li><div>${esc(x.body)}</div><div class="mute">${x.via === 'голос' ? '🎤 ' : ''}${hhmm(new Date(x.created_at))} · ${x.taken_at ? esc(x.note || 'не взято') : 'ждёт разбора ассистентом'}</div></li>`).join('')}</ul>` : '';
+  return wait.length ? `<ul>${wait.map((x) => `<li><div>${esc(x.body)}</div><div class="mute">${x.via === 'голос' ? '🎤 ' : ''}${hhmm(new Date(x.created_at))} · ${x.taken_at ? linkify(x.note || 'не взято') : 'ждёт разбора ассистентом (заходит раз в час, 7-22)'}</div></li>`).join('')}</ul>` : '';
 }
 R.orders = (m) => {
   if (!state.orders) return orderForm() + inboxList() + '<p class="mute">Журнал поручений пока недоступен.</p>';
   const open = state.orders.filter((o) => !o.closed_at).sort((a, b) => (b.needs_yes - a.needs_yes) || String(a.due_at || '9').localeCompare(String(b.due_at || '9')));
   const closed = state.orders.filter((o) => o.closed_at);
   const line = (o) => `<li><div class="row"><div class="grow" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(o.body)}</div>${o.needs_yes ? '<span class="tag red">нужно твоё да</span>' : ''}<button class="ghost small" data-order-done="${o.id}">✓ Сделано</button></div>
-      <div class="mute">${esc(o.route)} · ${esc(o.status)}${o.due_at ? ' · до ' + esc(dayTitle(dayKey(new Date(o.due_at)))) + ' ' + hhmm(new Date(o.due_at)) : ''}</div></li>`;
+      <div class="mute">${esc(o.route)} · ${esc(o.status)}${o.due_at ? ' · до ' + esc(dayTitle(dayKey(new Date(o.due_at)))) + ' ' + hhmm(new Date(o.due_at)) : ''}</div>${o.result ? `<div class="answer">${linkify(o.result)}</div>` : ''}</li>`;
   return orderForm() + inboxList() + `<div class="row"><div class="grow"><div class="big">${open.length}</div><div class="mute">открыто</div></div>
       <div class="grow"><div class="big" style="color:${open.some((o) => o.needs_yes) ? 'var(--red)' : 'inherit'}">${open.filter((o) => o.needs_yes).length}</div><div class="mute">ждут твоего да</div></div></div>
     <ul style="margin-top:8px">${open.map(line).join('') || '<li class="mute">Открытых поручений нет</li>'}</ul>
-    ${closed.length ? `<details><summary class="mute">Закрыто за 7 дней: ${closed.length}</summary><ul>${closed.map((o) => `<li><div>${esc(o.body)}</div><div class="mute">${esc(o.status)}${o.result ? ' · ' + esc(o.result) : ''}</div></li>`).join('')}</ul></details>` : ''}`;
+    ${closed.length ? `<details><summary class="mute">Закрыто за 7 дней: ${closed.length}</summary><ul>${closed.map((o) => `<li><div>${esc(o.body)}</div><div class="mute">${esc(o.status)}</div>${o.result ? `<div class="answer">${linkify(o.result)}</div>` : ''}</li>`).join('')}</ul></details>` : ''}`;
 };
 
 R.stub = R.note = (m) => `<p class="mute">${esc((m.config || {}).text || '')}</p>`;
@@ -299,19 +301,24 @@ $('board').addEventListener('submit', async (ev) => {
   await refresh();
 });
 let rec = null;
+// iPhone: Web Speech в приложении с экрана «Домой» работает ненадёжно (молча гаснет),
+// а клавиатуру можно открыть только прямо в нажатии. Поэтому на iPhone - диктовка клавиатуры.
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const orderTA = () => $('board').querySelector('[data-form="order"] textarea');
 $('board').addEventListener('click', (ev) => {
   if (!ev.target.closest('[data-act="mic"]')) return;
-  const ta = $('board').querySelector('[data-form="order"] textarea'), msg = $('micMsg');
+  const ta = orderTA(), msg = $('micMsg');
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  const fallback = () => { ta.focus(); msg.textContent = 'Нажми микрофон на клавиатуре iPhone и говори.'; orderVia = 'голос'; };
+  const keyboard = () => { orderVia = 'голос'; ta.focus(); msg.textContent = 'Клавиатура открыта: нажми 🎤 справа внизу клавиатуры и говори. Потом «Поручить». Нет 🎤 - включи «Диктовку»: Настройки → Основные → Клавиатура.'; };
   if (rec) { rec.stop(); return; }
-  if (!SR) return fallback();
+  if (isIOS || !SR) return keyboard(); // синхронно, в том же нажатии: иначе iOS не покажет клавиатуру
   const base = ta.value ? ta.value.trim() + ' ' : '';
+  let heard = false;
   rec = new SR(); rec.lang = 'ru-RU'; rec.interimResults = true; rec.continuous = true;
-  rec.onresult = (e) => { ta.value = base + Array.from(e.results).map((r) => r[0].transcript).join(''); orderDraft = ta.value; orderVia = 'голос'; };
-  rec.onerror = (e) => { rec = null; if (e.error !== 'no-speech' && e.error !== 'aborted') fallback(); };
-  rec.onend = () => { rec = null; msg.textContent = ta.value ? 'Проверь текст и нажми «Поручить».' : ''; };
-  try { rec.start(); msg.textContent = 'Слушаю. Нажми «🎤 Голосом» ещё раз, чтобы закончить.'; } catch { rec = null; fallback(); }
+  rec.onresult = (e) => { heard = true; const t = orderTA(); if (!t) return; t.value = base + Array.from(e.results).map((r) => r[0].transcript).join(''); orderDraft = t.value; orderVia = 'голос'; };
+  rec.onerror = (e) => { if (e.error === 'aborted') return; const m = $('micMsg'); if (m) m.textContent = e.error === 'not-allowed' || e.error === 'service-not-allowed' ? 'Микрофон не разрешён браузером. Разреши микрофон для сайта или нажми в поле и диктуй с клавиатуры.' : e.error === 'no-speech' ? 'Не расслышал. Нажми «🎤 Голосом» и говори сразу.' : 'Голос не сработал (' + e.error + '). Нажми в поле и диктуй с клавиатуры.'; };
+  rec.onend = () => { rec = null; const t = orderTA(), m = $('micMsg'); if (m && heard) m.textContent = t && t.value ? 'Проверь текст и нажми «Поручить».' : ''; };
+  try { rec.start(); msg.textContent = 'Слушаю. Нажми «🎤 Голосом» ещё раз, чтобы закончить.'; } catch { rec = null; keyboard(); }
 });
 
 // ---------- дела ----------
@@ -555,8 +562,9 @@ $('btnSignup').onclick = async () => {
   $('loginMsg').textContent = 'Вход создан. Напиши Архитектору: «подтверди вход в пульт», потом нажми «Войти».';
 };
 
-async function refresh() {
+async function refresh(bg = false) {
   try { await load(); } catch (e) { state.offline = true; console.error(e); }
+  if (bg && (rec || document.activeElement === orderTA())) return; // фоновое обновление во время диктовки или ввод: не стираем поле перерисовкой
   renderBoard();
 }
 
@@ -575,8 +583,8 @@ async function start() {
   await refresh();
 }
 
-document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('board').classList.contains('hidden')) refresh(); });
-setInterval(() => { if (!document.hidden && !$('board').classList.contains('hidden')) refresh(); }, 5 * 6e4);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('board').classList.contains('hidden')) refresh(true); });
+setInterval(() => { if (!document.hidden && !$('board').classList.contains('hidden')) refresh(true); }, 5 * 6e4);
 if ('serviceWorker' in navigator) {
   const hadSW = !!navigator.serviceWorker.controller;
   let reloaded = false;
