@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.1.0',
+  version: '0.2.0',
   tz: 'Asia/Omsk',
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
@@ -49,7 +49,7 @@ async function load() {
     sb.from('pult_tasks').select('*').or(`done_at.is.null,done_at.gt.${since}`).order('due_at', { ascending: true, nullsFirst: false }),
     sb.from('pult_mail_snapshot').select('*').order('taken_at', { ascending: false }).limit(1),
     sb.from('pult_settings').select('stale_after_minutes').limit(1),
-    sb.functions.invoke('pult-calendar', { method: 'GET' }).catch((e) => ({ error: e })),
+    sb.functions.invoke('pult-calendar?days=35', { method: 'GET' }).catch((e) => ({ error: e })),
   ]);
   const netFail = [lay, tasks, mail].some((r) => r.error && /fetch|network/i.test(r.error.message || ''));
   state.offline = netFail;
@@ -154,6 +154,35 @@ R.shifts = (m) => {
   const ready = state.cal && state.cal.configured !== false;
   return (ready ? `<div class="big">${evs.length}</div><div class="mute">смен за 7 дней</div>` : '') + grouped(evs, 'Смен нет');
 };
+
+// Календарь сеткой: 5 недель с понедельника текущей, нажатие на день показывает его события
+let calDay = null;
+R.calendar = (m) => {
+  if (!state.cal || state.cal.configured === false) return grouped([], '');
+  const today = dayKey(new Date());
+  const t = new Date(today + 'T12:00:00+06:00');
+  const monday = new Date(t.getTime() - ((t.getUTCDay() + 6) % 7) * 864e5);
+  const by = {};
+  for (const e of state.cal.events) (by[evDay(e)] ||= []).push(e);
+  const sel = calDay || today;
+  let cells = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'].map((d) => `<div class="cal-h">${d}</div>`).join('');
+  for (let i = 0; i < 35; i++) {
+    const k = dayKey(new Date(monday.getTime() + i * 864e5));
+    const n = (by[k] || []).length;
+    const cls = ['cal-d', k === today ? 'cal-today' : '', k === sel ? 'cal-sel' : '', k < today ? 'cal-past' : ''].join(' ');
+    cells += `<button class="${cls}" data-day="${k}"><span>${Number(k.slice(8))}</span>${n ? `<i>${n > 3 ? '•••' : '•'.repeat(n)}</i>` : ''}</button>`;
+  }
+  const list = by[sel] || [];
+  return `<div class="cal">${cells}</div><div class="day">${esc(dayTitle(sel))}</div>
+    <ul>${list.map((e) => `<li><b>${esc(evTime(e))}</b> ${esc(e.title)}</li>`).join('') || '<li class="mute">Событий нет</li>'}</ul>
+    <p class="mute">данные от ${hhmm(new Date(state.cal.fetched_at))}</p>`;
+};
+$('board').addEventListener('click', (ev) => {
+  const d = ev.target.closest('[data-day]');
+  if (!d) return;
+  calDay = d.dataset.day;
+  renderBoard();
+});
 
 R.stub = R.note = (m) => `<p class="mute">${esc((m.config || {}).text || '')}</p>`;
 

@@ -1,4 +1,4 @@
-// Пульт: календарь на 7 дней из секретной ссылки iCal Google.
+// Пульт: календарь (неделя назад и до 40 дней вперёд) из секретной ссылки iCal Google.
 // Ссылка хранится только в секрете PULT_ICAL_URL. Отвечает только владельцу пульта.
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import ICAL from "npm:ical.js@2.1.0";
@@ -24,8 +24,8 @@ Deno.serve(async (req) => {
   const url = Deno.env.get("PULT_ICAL_URL");
   if (!url) return json({ configured: false, events: [], fetched_at: new Date().toISOString() });
 
-  const days = Math.min(Math.max(Number(new URL(req.url).searchParams.get("days") ?? 7), 1), 14);
-  const from = new Date(Date.now() - 24 * 3600e3);
+  const days = Math.min(Math.max(Number(new URL(req.url).searchParams.get("days") ?? 7), 1), 40);
+  const from = new Date(Date.now() - 8 * 24 * 3600e3); // неделя назад: сетка календаря начинается с понедельника
   const to = new Date(Date.now() + (days + 1) * 24 * 3600e3);
 
   let text: string;
