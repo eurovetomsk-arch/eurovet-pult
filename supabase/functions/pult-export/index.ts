@@ -3,6 +3,10 @@
 //   GET  ?t=<токен>&f=json  - все данные пульта и ассистента для копии (без ключей, Face ID, подписок пуша, журнала)
 //   POST ?action=links  (владелец, JWT) - выдать ссылки с токеном; токен создаётся при первом вызове
 //   POST ?action=rotate (владелец, JWT) - сменить токен: старые ссылки перестают работать
+//   POST ?action=iphone-link (владелец, JWT) - выдать ссылку для Команды iPhone (новый токен reminders-iphone, старый перестаёт работать)
+//   GET  ?t=<токен iPhone>&f=iphone         - что сделать в «Напоминаниях»: remove (метки старых копий), add (новые и изменённые)
+//   POST ?t=<токен iPhone>&f=iphone-done    - метки отмеченных на iPhone (поле tags, через запятую) -> «сделано» в Ассистенте
+//   Токен iPhone годится только для этих двух вызовов: полную копию и календарь по нему не получить.
 // Токен лежит только в pult_private (видит сервер). Функция только читает данные, ничего не меняет, кроме токена.
 // Устройства-копировщики (Mac) держат свой токен у себя, а в базе лежит только его SHA-256: pult_private key 'export_hash:<имя>'.
 // Так токен Mac не проходит ни через чат, ни через ИИ. Отозвать: заменить значение этой строки.
@@ -94,6 +98,49 @@ async function ics() {
   });
 }
 
+// ---------- Команда iPhone: копия в приложении «Напоминания» ----------
+const PHONE = "reminders-iphone";
+const tagOf = (id: number) => `#ассистент-${id}`;
+// Время для iPhone: «2026-11-10 11:00» по Омску, Команды понимают его как дату
+const omsk = (iso: string) => new Date(new Date(iso).getTime() + 6 * 3600e3).toISOString().slice(0, 16).replace("T", " ");
+async function iphonePlan() {
+  const since = new Date(Date.now() - 30 * 864e5).toISOString();
+  const { data, error } = await admin.from("pult_tasks").select("id,title,note,due_at,priority,done_at,archived_at,phone_sig")
+    .or(`and(done_at.is.null,archived_at.is.null),phone_sig.not.is.null,updated_at.gt.${since}`).order("due_at", { nullsFirst: false }).limit(500);
+  if (error) return json({ error: error.message }, 500);
+  const remove: string[] = [], add: { tag: string; title: string; due: string; note: string }[] = [];
+  const marks: { id: number; sig: string | null }[] = [];
+  for (const t of data ?? []) {
+    const open = !t.done_at && !t.archived_at;
+    const sig = open ? `${t.title}|${t.due_at ?? ""}`.slice(0, 400) : null;
+    if (sig === t.phone_sig) continue;
+    if (t.phone_sig) remove.push(tagOf(t.id));
+    if (sig) add.push({ tag: tagOf(t.id), title: (t.priority === 1 ? "❗ " : "") + t.title, due: t.due_at ? omsk(t.due_at) : "", note: [t.note, tagOf(t.id)].filter(Boolean).join("\n") });
+    marks.push({ id: t.id, sig });
+  }
+  // Отмечаем сразу при выдаче: Команда выполняет план целиком за один запуск
+  for (const m of marks) await admin.from("pult_tasks").update({ phone_sig: m.sig }).eq("id", m.id);
+  await admin.from("pult_log").insert({ actor: "export", action: "iphone", detail: { add: add.length, remove: remove.length } });
+  return json({ remove, add, removeCount: remove.length, addCount: add.length });
+}
+async function iphoneDone(req: Request) {
+  const ct = req.headers.get("content-type") ?? "";
+  let raw = "";
+  try {
+    if (ct.includes("json")) { const b = await req.json(); raw = Array.isArray(b?.tags) ? b.tags.join(",") : String(b?.tags ?? ""); }
+    else raw = String((await req.formData()).get("tags") ?? "");
+  } catch { return json({ error: "нет поля tags" }, 400); }
+  const ids = [...new Set([...raw.matchAll(/#ассистент-(\d{1,12})/g)].map((m) => Number(m[1])))].slice(0, 300);
+  let done = 0;
+  if (ids.length) {
+    const { data, error } = await admin.from("pult_tasks").update({ done_at: new Date().toISOString() }).in("id", ids).is("done_at", null).is("archived_at", null).select("id");
+    if (error) return json({ error: error.message }, 500);
+    done = data?.length ?? 0;
+  }
+  await admin.from("pult_log").insert({ actor: "export", action: "iphone-done", detail: { seen: ids.length, done } });
+  return json({ seen: ids.length, done });
+}
+
 // ---------- JSON ----------
 async function all(table: string, cols = "*", order = "id") {
   const { data, error } = await admin.from(table).select(cols).order(order).limit(10000);
@@ -132,9 +179,25 @@ Deno.serve(async (req) => {
     return json({ ics: `${base}&f=ics`, webcal: `${base}&f=ics`.replace(/^https:/, "webcal:"), json: `${base}&f=json` });
   }
 
+  if (req.method === "POST" && action === "iphone-link") {
+    if (!(await isOwner(req))) return json({ error: "нет доступа" }, 403);
+    const t = newToken() + newToken(); // 96 знаков; в базе только отпечаток
+    await admin.from("pult_private").upsert({ key: "export_hash:" + PHONE, value: await sha256hex(t) }, { onConflict: "key" });
+    const base = `${URL_}/functions/v1/pult-export?t=${t}`;
+    return json({ get: `${base}&f=iphone`, done: `${base}&f=iphone-done` });
+  }
+
+  if (q.get("t") && (q.get("f") === "iphone" || q.get("f") === "iphone-done")) {
+    const who = await tokenOk(q.get("t")!);
+    if (who !== PHONE) return json({ error: "нет доступа" }, 403);
+    if (req.method === "GET" && q.get("f") === "iphone") return iphonePlan();
+    if (req.method === "POST" && q.get("f") === "iphone-done") return iphoneDone(req);
+    return json({ error: "нет доступа" }, 403);
+  }
+
   if (req.method === "GET" && q.get("t")) {
     const who = await tokenOk(q.get("t")!);
-    if (!who) return json({ error: "нет доступа" }, 403);
+    if (!who || who === PHONE) return json({ error: "нет доступа" }, 403); // токен iPhone не даёт полную копию
     await admin.from("pult_log").insert({ actor: "export", action: q.get("f") === "json" ? "json" : "ics", detail: { by: who, ua: (req.headers.get("user-agent") ?? "").slice(0, 80) } });
     return q.get("f") === "json" ? dump() : ics();
   }
