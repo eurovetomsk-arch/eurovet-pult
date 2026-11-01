@@ -607,3 +607,21 @@ end $$;
 revoke execute on function public.pult_calendar_watch(timestamptz) from public, anon, authenticated;
 
 select cron.schedule('pult-calendar-watch', '*/15 * * * *', $job$ select public.pult_calendar_watch() $job$);
+
+-- 12. Проверка ТЗ без ИИ (ТЗ J2, письмо 848, 01.11.2026): есть ли строка «Готово, когда:».
+create or replace function public.tz_has_criterion(p_content text)
+returns text
+language sql
+immutable
+set search_path = pg_catalog
+as $$
+  select case
+    when coalesce(p_content, '') ~* '(^|\n)[[:space:]*_#>•-]*(\d+[.)][[:space:]]*)?готово,?[[:space:]]+когда[[:space:]]*:[[:space:]]*[^[:space:]]'
+    then 'да' else 'нет'
+  end
+$$;
+
+comment on function public.tz_has_criterion(text) is
+  'ТЗ J2 (848): да/нет - есть ли в письме строка «Готово, когда:» с текстом. Без ИИ. Откат: drop function public.tz_has_criterion(text).';
+
+revoke all on function public.tz_has_criterion(text) from public, anon, authenticated;
