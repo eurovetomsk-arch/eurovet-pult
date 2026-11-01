@@ -21,7 +21,7 @@
    В файле `*_schema.sql` проверить почту владельца в `pult_settings`.
 3. Edge Functions: создать `pult-calendar` (проверка JWT включена), `pult-push` и `pult-passkey` (проверка JWT выключена), код из `supabase/functions/`.
    Если меняется адрес пульта (не eurovetomsk-arch.github.io), поправить `CFG` в `pult-passkey/index.ts` и заново включить Face ID на устройствах.
-4. Edge Functions - Secrets: `PULT_ICAL_URL` = секретный адрес iCal из Google Календаря (Настройки - календарь - «Секретный адрес в формате iCal»).
+4. Календарь: по умолчанию снимок `pult_calendar_cache` от планового агента (ТЗ 805), секрет не нужен. Запасной путь - Edge Functions - Secrets: `PULT_ICAL_URL` = секретный адрес iCal из Google Календаря (Настройки - календарь - «Секретный адрес в формате iCal»).
 5. В `app.js` заменить `CFG.url` и `CFG.key` на адрес и публичный ключ (Publishable key) нового проекта. Залить в репозиторий.
 6. Открыть пульт, «Создать вход (один раз)» с почтой владельца. Если вход просит подтверждение: в SQL Editor
    `update auth.users set email_confirmed_at = now() where email = '<почта>';`
