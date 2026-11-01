@@ -192,14 +192,18 @@ async function iphoneMirror(raw: string, src: string) {
 }
 async function iphoneDone(req: Request) {
   const ct = req.headers.get("content-type") ?? "";
-  let raw = "", mirror: string | null = null, src = "Не забыть";
+  let raw = "", mirror: string | null = null, src = "Не забыть", keys: string[] = [];
   try {
     if (ct.includes("json")) {
       const b = await req.json(); raw = Array.isArray(b?.tags) ? b.tags.join(",") : String(b?.tags ?? "");
       if (b && "mirror" in b) mirror = String(b.mirror ?? ""); if (b?.list) src = String(b.list).slice(0, 60);
     } else {
-      const f = await req.formData(); raw = String(f.get("tags") ?? "");
-      if (f.has("mirror")) mirror = String(f.get("mirror") ?? ""); if (f.get("list")) src = String(f.get("list")).slice(0, 60);
+      // Ключи полей чистим: при вставке в Команду к ним прилипают пробелы и переводы строки
+      const f = new Map<string, string>();
+      for (const [k, v] of (await req.formData()).entries()) f.set(k.trim().toLowerCase(), typeof v === "string" ? v : "");
+      keys = [...f.keys()].map((k) => k.slice(0, 20));
+      raw = f.get("tags") ?? "";
+      if (f.has("mirror")) mirror = f.get("mirror") ?? ""; if (f.get("list")) src = String(f.get("list")).slice(0, 60);
     }
   } catch { return json({ error: "нет поля tags" }, 400); }
   // Поле mirror есть только у новой Команды; старая его не шлёт, и зеркало не трогается
@@ -215,7 +219,7 @@ async function iphoneDone(req: Request) {
     if (error) return json({ error: error.message }, 500);
     done = data?.length ?? 0;
   }
-  await admin.from("pult_log").insert({ actor: "export", action: "iphone-done", detail: { seen: ids.size, done, mirror: mir } });
+  await admin.from("pult_log").insert({ actor: "export", action: "iphone-done", detail: { seen: ids.size, done, mirror: mir, keys } });
   return json({ seen: ids.size, done, mirror: mir });
 }
 
