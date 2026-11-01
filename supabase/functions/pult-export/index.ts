@@ -200,10 +200,9 @@ async function iphoneDone(req: Request) {
     } else {
       // Ключи полей чистим: при вставке в Команду к ним прилипают пробелы и переводы строки
       const f = new Map<string, string>();
-      for (const [k, v] of (await req.formData()).entries()) f.set(k.trim().toLowerCase(), typeof v === "string" ? v : "");
-      keys = [...f.keys()].map((k) => k.slice(0, 20));
+      for (const [k, v] of (await req.formData()).entries()) { f.set(k.trim().toLowerCase(), typeof v === "string" ? v : "\u0000"); keys.push(k.slice(0, 20) + (typeof v === "string" ? "" : ":file")); }
       raw = f.get("tags") ?? "";
-      if (f.has("mirror")) mirror = f.get("mirror") ?? ""; if (f.get("list")) src = String(f.get("list")).slice(0, 60);
+      if (f.has("mirror") && f.get("mirror") !== "\u0000") mirror = f.get("mirror") ?? ""; if (f.get("list")) src = String(f.get("list")).slice(0, 60);
     }
   } catch { return json({ error: "нет поля tags" }, 400); }
   // Поле mirror есть только у новой Команды; старая его не шлёт, и зеркало не трогается
