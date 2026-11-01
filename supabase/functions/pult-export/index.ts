@@ -135,7 +135,9 @@ const MON = ["янв", "фев", "мар", "апр", "ма", "июн", "июл",
 function phoneDate(d: string): string | null {
   d = d.replace(/\u00a0|\u202f/g, " ").trim();
   if (!d) return null;
-  if (/^\d{4}-\d{2}-\d{2}T/.test(d)) { const t = Date.parse(d); return Number.isNaN(t) ? null : new Date(t).toISOString(); }
+  // ISO без пояса (Команда так шлёт «как есть») считать омским временем, иначе выйдет сдвиг на 6 ч
+  if (/^\d{4}-\d{2}-\d{2}T/.test(d) && !/(Z|[+-]\d{2}:?\d{2})$/.test(d)) d = d + "+06:00";
+  if (/^\d{4}-\d{2}-\d{2}T/.test(d)) { const t = Date.parse(d); return Number.isNaN(t) ? null : allDay(new Date(t).toISOString()); }
   let y = 0, m = -1, day = 0;
   const num = d.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
   const ru = d.toLowerCase().match(/(\d{1,2})\s+([а-яё]+)\.?\s+(\d{4})/);
@@ -144,20 +146,27 @@ function phoneDate(d: string): string | null {
   if (m < 0 || m > 11 || !day || !y) return null;
   const tm = d.match(/(\d{1,2}):(\d{2})/);
   const hh = tm ? +tm[1] : 9, mm = tm ? +tm[2] : 0;
-  return new Date(Date.UTC(y, m, day, hh - 6, mm)).toISOString();
+  return allDay(new Date(Date.UTC(y, m, day, hh - 6, mm)).toISOString());
+}
+// Напоминание «на весь день» приходит с 00:00 по Омску: ставим 09:00, как у дат без времени
+function allDay(iso: string): string {
+  const t = Date.parse(iso);
+  return new Date(t + 6 * 3600e3).toISOString().slice(11, 16) === "00:00" ? new Date(t + 9 * 3600e3).toISOString() : iso;
 }
 async function iphoneMirror(raw: string, src: string) {
   const rows: { title: string; due_at: string | null }[] = [];
+  const samples: string[] = []; // сырые даты с телефона в журнал: так видно, в каком виде их шлёт Команда
   for (const line of raw.split(/\r?\n/)) {
     const i = line.lastIndexOf("|");
     const title = (i >= 0 ? line.slice(0, i) : line).trim().slice(0, 300);
     const d = i >= 0 ? line.slice(i + 1).trim() : "";
     if (!title) continue;
     rows.push({ title, due_at: phoneDate(d) });
+    if (d && samples.length < 12) samples.push(d.slice(0, 40));
   }
   const { data: cur, error } = await admin.from("pult_tasks").select("id,title,due_at,owner_id")
     .eq("phone_src", src).is("done_at", null).is("archived_at", null).limit(2000);
-  if (error) return { added: 0, moved: 0, closed: 0, error: error.message };
+  if (error) return { added: 0, moved: 0, closed: 0, error: error.message, samples };
   const left = [...(cur ?? [])];
   const norm = (x: string | null) => (x ? new Date(x).toISOString() : null);
   // Закрытые в Ассистенте не возвращаем, пока на iPhone тот же срок (у повторяющихся срок потом сдвинется)
@@ -188,7 +197,7 @@ async function iphoneMirror(raw: string, src: string) {
     const { data } = await admin.from("pult_tasks").update({ done_at: new Date().toISOString() }).in("id", left.map((t) => t.id)).is("done_at", null).select("id");
     closed = data?.length ?? 0;
   }
-  return { added, moved, closed };
+  return { added, moved, closed, samples };
 }
 async function iphoneDone(req: Request) {
   const ct = req.headers.get("content-type") ?? "";
