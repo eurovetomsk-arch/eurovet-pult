@@ -30,7 +30,8 @@ create table if not exists public.pult_tasks (
   updated_at timestamp with time zone default now() not null,
   reminded_at timestamp with time zone,
   archived_at timestamp with time zone,
-  phone_sig text
+  phone_sig text,
+  phone_src text
 );
 
 create table if not exists public.pult_mail_snapshot (

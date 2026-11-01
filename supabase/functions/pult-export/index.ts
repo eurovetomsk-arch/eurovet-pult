@@ -5,7 +5,9 @@
 //   POST ?action=rotate (владелец, JWT) - сменить токен: старые ссылки перестают работать
 //   POST ?action=iphone-link (владелец, JWT) - выдать ссылку для Команды iPhone (новый токен reminders-iphone, старый перестаёт работать)
 //   GET  ?t=<токен iPhone>&f=iphone         - что сделать в «Напоминаниях»: remove (метки старых копий), add (новые и изменённые)
-//   POST ?t=<токен iPhone>&f=iphone-done    - метки отмеченных на iPhone (поле tags, через запятую) -> «сделано» в Ассистенте
+//   POST ?t=<токен iPhone>&f=iphone-done    - метки отмеченных на iPhone (поле tags, через запятую) -> «сделано» в Ассистенте;
+//                                             поле mirror: все открытые из списка «Не забыть» iPhone, по строке «Название|дата ISO»
+//                                             -> зеркало в Ассистенте (phone_src): новые добавляются, срок обновляется, исчезнувшие закрываются
 //   Токен iPhone годится только для этих двух вызовов: полную копию и календарь по нему не получить.
 // Токен лежит только в pult_private (видит сервер). Функция только читает данные, ничего не меняет, кроме токена.
 // Устройства-копировщики (Mac) держат свой токен у себя, а в базе лежит только его SHA-256: pult_private key 'export_hash:<имя>'.
@@ -107,7 +109,7 @@ const omsk = (iso: string) => new Date(new Date(iso).getTime() + 6 * 3600e3).toI
 async function iphonePlan() {
   const since = new Date(Date.now() - 30 * 864e5).toISOString();
   const { data, error } = await admin.from("pult_tasks").select("id,title,note,due_at,priority,done_at,archived_at,phone_sig")
-    .or(`and(done_at.is.null,archived_at.is.null),phone_sig.not.is.null,updated_at.gt.${since}`).order("due_at", { nullsFirst: false }).limit(500);
+    .is("phone_src", null).or(`and(done_at.is.null,archived_at.is.null),phone_sig.not.is.null,updated_at.gt.${since}`).order("due_at", { nullsFirst: false }).limit(500);
   if (error) return json({ error: error.message }, 500);
   const remove: string[] = [], add: { tag: string; title: string; due: string; note: string }[] = [];
   const marks: { id: number; sig: string | null }[] = [];
@@ -124,16 +126,90 @@ async function iphonePlan() {
   await admin.from("pult_log").insert({ actor: "export", action: "iphone", detail: { add: add.length, remove: remove.length } });
   return json({ remove, add, removeCount: remove.length, addCount: add.length });
 }
+// Зеркало списка iPhone (по умолчанию «Не забыть»): Команда каждый раз шлёт все его открытые напоминания,
+// строка «Название|2026-11-02T09:00:00+06:00» (дата может быть пустой). Заметки не берём: там бывают ссылки с паролями.
+// Оригиналы на iPhone не трогаем (повторы, свои списки). Обратно на iPhone зеркало не уходит: план его пропускает.
+// Дата из Команды: ISO 8601 или как iPhone пишет по-русски («2 нояб. 2026 г., 9:00», «02.11.2026, 09:00»).
+// Без часового пояса - время Омска; без времени - 09:00.
+const MON = ["янв", "фев", "мар", "апр", "ма", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+function phoneDate(d: string): string | null {
+  d = d.replace(/\u00a0|\u202f/g, " ").trim();
+  if (!d) return null;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(d)) { const t = Date.parse(d); return Number.isNaN(t) ? null : new Date(t).toISOString(); }
+  let y = 0, m = -1, day = 0;
+  const num = d.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+  const ru = d.toLowerCase().match(/(\d{1,2})\s+([а-яё]+)\.?\s+(\d{4})/);
+  if (num) { day = +num[1]; m = +num[2] - 1; y = +num[3]; }
+  else if (ru) { day = +ru[1]; y = +ru[3]; m = MON.findIndex((p) => ru[2].startsWith(p)); }
+  if (m < 0 || m > 11 || !day || !y) return null;
+  const tm = d.match(/(\d{1,2}):(\d{2})/);
+  const hh = tm ? +tm[1] : 9, mm = tm ? +tm[2] : 0;
+  return new Date(Date.UTC(y, m, day, hh - 6, mm)).toISOString();
+}
+async function iphoneMirror(raw: string, src: string) {
+  const rows: { title: string; due_at: string | null }[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const i = line.lastIndexOf("|");
+    const title = (i >= 0 ? line.slice(0, i) : line).trim().slice(0, 300);
+    const d = i >= 0 ? line.slice(i + 1).trim() : "";
+    if (!title) continue;
+    rows.push({ title, due_at: phoneDate(d) });
+  }
+  const { data: cur, error } = await admin.from("pult_tasks").select("id,title,due_at,owner_id")
+    .eq("phone_src", src).is("done_at", null).is("archived_at", null).limit(2000);
+  if (error) return { added: 0, moved: 0, closed: 0, error: error.message };
+  const left = [...(cur ?? [])];
+  const norm = (x: string | null) => (x ? new Date(x).toISOString() : null);
+  // Закрытые в Ассистенте не возвращаем, пока на iPhone тот же срок (у повторяющихся срок потом сдвинется)
+  const { data: shut } = await admin.from("pult_tasks").select("title,due_at").eq("phone_src", src)
+    .or("done_at.not.is.null,archived_at.not.is.null").gt("updated_at", new Date(Date.now() - 90 * 864e5).toISOString()).limit(2000);
+  const closedKeys = new Set((shut ?? []).map((t) => `${t.title}|${norm(t.due_at)}`));
+  let added = 0, moved = 0;
+  const fresh: typeof rows = [];
+  for (const r of rows) {
+    // сначала точное совпадение (название и срок), потом по названию: у повторяющихся срок сдвигается
+    let k = left.findIndex((t) => t.title === r.title && norm(t.due_at) === r.due_at);
+    if (k < 0) k = left.findIndex((t) => t.title === r.title);
+    if (k < 0) { if (!closedKeys.has(`${r.title}|${r.due_at}`)) fresh.push(r); continue; }
+    const t = left.splice(k, 1)[0];
+    if (norm(t.due_at) !== r.due_at) { await admin.from("pult_tasks").update({ due_at: r.due_at }).eq("id", t.id); moved++; }
+  }
+  if (fresh.length) {
+    const { data: own } = await admin.from("pult_tasks").select("owner_id").order("id", { ascending: false }).limit(1);
+    const owner_id = own?.[0]?.owner_id;
+    if (owner_id) {
+      const { data } = await admin.from("pult_tasks").insert(fresh.map((r) => ({ ...r, owner_id, priority: 2, phone_src: src }))).select("id");
+      added = data?.length ?? 0;
+    }
+  }
+  // Нет в списке iPhone = выполнено или удалено там: закрываем здесь
+  let closed = 0;
+  if (left.length) {
+    const { data } = await admin.from("pult_tasks").update({ done_at: new Date().toISOString() }).in("id", left.map((t) => t.id)).is("done_at", null).select("id");
+    closed = data?.length ?? 0;
+  }
+  return { added, moved, closed };
+}
 async function iphoneDone(req: Request) {
   const ct = req.headers.get("content-type") ?? "";
-  let raw = "";
+  let raw = "", mirror: string | null = null, src = "Не забыть", keys: string[] = [];
   try {
-    if (ct.includes("json")) { const b = await req.json(); raw = Array.isArray(b?.tags) ? b.tags.join(",") : String(b?.tags ?? ""); }
-    else raw = String((await req.formData()).get("tags") ?? "");
+    if (ct.includes("json")) {
+      const b = await req.json(); raw = Array.isArray(b?.tags) ? b.tags.join(",") : String(b?.tags ?? "");
+      if (b && "mirror" in b) mirror = String(b.mirror ?? ""); if (b?.list) src = String(b.list).slice(0, 60);
+    } else {
+      // Ключи полей чистим: при вставке в Команду к ним прилипают пробелы и переводы строки
+      const f = new Map<string, string>();
+      for (const [k, v] of (await req.formData()).entries()) { f.set(k.trim().toLowerCase(), typeof v === "string" ? v : "\u0000"); keys.push(k.slice(0, 20) + (typeof v === "string" ? "" : ":file")); }
+      raw = f.get("tags") ?? "";
+      if (f.has("mirror") && f.get("mirror") !== "\u0000") mirror = f.get("mirror") ?? ""; if (f.get("list")) src = String(f.get("list")).slice(0, 60);
+    }
   } catch { return json({ error: "нет поля tags" }, 400); }
+  // Поле mirror есть только у новой Команды; старая его не шлёт, и зеркало не трогается
+  const mir = mirror === null ? null : await iphoneMirror(mirror, src);
   const ids = new Set([...raw.matchAll(/\[ассистент-(\d{1,12})\]/g)].map((m) => Number(m[1])));
   // Отметки на iPhone копятся годами; сверяем только с открытыми напоминаниями, которые есть на телефоне
-  const { data: open, error: e1 } = await admin.from("pult_tasks").select("id").is("done_at", null).is("archived_at", null).not("phone_sig", "is", null).limit(2000);
+  const { data: open, error: e1 } = await admin.from("pult_tasks").select("id").is("phone_src", null).is("done_at", null).is("archived_at", null).not("phone_sig", "is", null).limit(2000);
   if (e1) return json({ error: e1.message }, 500);
   const hit = (open ?? []).map((t) => t.id).filter((id) => ids.has(id));
   let done = 0;
@@ -142,8 +218,8 @@ async function iphoneDone(req: Request) {
     if (error) return json({ error: error.message }, 500);
     done = data?.length ?? 0;
   }
-  await admin.from("pult_log").insert({ actor: "export", action: "iphone-done", detail: { seen: ids.size, done } });
-  return json({ seen: ids.size, done });
+  await admin.from("pult_log").insert({ actor: "export", action: "iphone-done", detail: { seen: ids.size, done, mirror: mir, keys } });
+  return json({ seen: ids.size, done, mirror: mir });
 }
 
 // ---------- JSON ----------
