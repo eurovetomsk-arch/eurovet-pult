@@ -5,7 +5,8 @@
 //   POST ?action=rotate (владелец, JWT) - сменить токен: старые ссылки перестают работать
 //   POST ?action=iphone-link (владелец, JWT) - выдать ссылку для Команды iPhone (новый токен reminders-iphone, старый перестаёт работать)
 //   GET  ?t=<токен iPhone>&f=iphone         - что сделать в «Напоминаниях»: remove (метки старых копий), add (новые и изменённые)
-//   POST ?t=<токен iPhone>&f=iphone-done    - метки отмеченных на iPhone (поле tags, через запятую) -> «сделано» в Ассистенте
+//   POST ?t=<токен iPhone>&f=iphone-done    - метки отмеченных на iPhone (поле tags, через запятую) -> «сделано» в Ассистенте;
+//                                             поле new: созданные на iPhone, по строке «Название|дата ISO» -> новые напоминания Ассистента
 //   Токен iPhone годится только для этих двух вызовов: полную копию и календарь по нему не получить.
 // Токен лежит только в pult_private (видит сервер). Функция только читает данные, ничего не меняет, кроме токена.
 // Устройства-копировщики (Mac) держат свой токен у себя, а в базе лежит только его SHA-256: pult_private key 'export_hash:<имя>'.
@@ -124,13 +125,38 @@ async function iphonePlan() {
   await admin.from("pult_log").insert({ actor: "export", action: "iphone", detail: { add: add.length, remove: remove.length } });
   return json({ remove, add, removeCount: remove.length, addCount: add.length });
 }
+// Созданные прямо в «Напоминаниях» iPhone (без метки): строка «Название|2026-11-02T10:00:00+06:00», дата может быть пустой.
+// Команда после отправки уносит оригиналы в «Ассистент: архив», а план тут же кладёт копию с меткой.
+async function iphoneNew(raw: string) {
+  const rows: { title: string; due_at: string | null }[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const i = line.lastIndexOf("|");
+    const title = (i >= 0 ? line.slice(0, i) : line).trim().slice(0, 300);
+    const d = i >= 0 ? line.slice(i + 1).trim() : "";
+    if (!title) continue;
+    const t = d ? Date.parse(d) : NaN;
+    rows.push({ title, due_at: Number.isNaN(t) ? null : new Date(t).toISOString() });
+  }
+  if (!rows.length) return 0;
+  const { data: own } = await admin.from("pult_tasks").select("owner_id").order("id", { ascending: false }).limit(1);
+  const owner_id = own?.[0]?.owner_id;
+  if (!owner_id) return 0;
+  // Повторная отправка того же (Команда оборвалась до переноса в архив) не плодит дубли
+  const { data: open } = await admin.from("pult_tasks").select("title,due_at").is("done_at", null).is("archived_at", null).limit(2000);
+  const have = new Set((open ?? []).map((t) => `${t.title}|${t.due_at ? new Date(t.due_at).toISOString() : ""}`));
+  const fresh = rows.filter((r) => !have.has(`${r.title}|${r.due_at ?? ""}`) && (have.add(`${r.title}|${r.due_at ?? ""}`), true));
+  if (!fresh.length) return 0;
+  const { error } = await admin.from("pult_tasks").insert(fresh.map((r) => ({ ...r, owner_id, priority: 2 })));
+  return error ? 0 : fresh.length;
+}
 async function iphoneDone(req: Request) {
   const ct = req.headers.get("content-type") ?? "";
-  let raw = "";
+  let raw = "", rawNew = "";
   try {
-    if (ct.includes("json")) { const b = await req.json(); raw = Array.isArray(b?.tags) ? b.tags.join(",") : String(b?.tags ?? ""); }
-    else raw = String((await req.formData()).get("tags") ?? "");
+    if (ct.includes("json")) { const b = await req.json(); raw = Array.isArray(b?.tags) ? b.tags.join(",") : String(b?.tags ?? ""); rawNew = String(b?.new ?? ""); }
+    else { const f = await req.formData(); raw = String(f.get("tags") ?? ""); rawNew = String(f.get("new") ?? ""); }
   } catch { return json({ error: "нет поля tags" }, 400); }
+  const created = rawNew.trim() ? await iphoneNew(rawNew) : 0;
   const ids = new Set([...raw.matchAll(/\[ассистент-(\d{1,12})\]/g)].map((m) => Number(m[1])));
   // Отметки на iPhone копятся годами; сверяем только с открытыми напоминаниями, которые есть на телефоне
   const { data: open, error: e1 } = await admin.from("pult_tasks").select("id").is("done_at", null).is("archived_at", null).not("phone_sig", "is", null).limit(2000);
@@ -142,8 +168,8 @@ async function iphoneDone(req: Request) {
     if (error) return json({ error: error.message }, 500);
     done = data?.length ?? 0;
   }
-  await admin.from("pult_log").insert({ actor: "export", action: "iphone-done", detail: { seen: ids.size, done } });
-  return json({ seen: ids.size, done });
+  await admin.from("pult_log").insert({ actor: "export", action: "iphone-done", detail: { seen: ids.size, done, created } });
+  return json({ seen: ids.size, done, created });
 }
 
 // ---------- JSON ----------
