@@ -1,5 +1,8 @@
-// Пульт: календарь (неделя назад и до 40 дней вперёд) из секретной ссылки iCal Google.
-// Ссылка хранится только в секрете PULT_ICAL_URL. Отвечает только владельцу пульта.
+// Пульт: календарь (неделя назад и до 40 дней вперёд).
+// v6 (ТЗ 805): если секрета PULT_ICAL_URL нет, отдаёт снимок из pult_calendar_cache,
+// который плановый агент Строителя кладёт раз в 30 минут из коннектора Google Календаря.
+// Ветка iCal оставлена: появится секрет - функция снова читает iCal напрямую.
+// Отвечает только владельцу пульта.
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import ICAL from "npm:ical.js@2.1.0";
 
@@ -22,11 +25,25 @@ Deno.serve(async (req) => {
   if (error || owner !== true) return json({ error: "нет доступа" }, 403);
 
   const url = Deno.env.get("PULT_ICAL_URL");
-  if (!url) return json({ configured: false, events: [], fetched_at: new Date().toISOString() });
-
   const days = Math.min(Math.max(Number(new URL(req.url).searchParams.get("days") ?? 7), 1), 40);
   const from = new Date(Date.now() - 8 * 24 * 3600e3); // неделя назад: сетка календаря начинается с понедельника
   const to = new Date(Date.now() + (days + 1) * 24 * 3600e3);
+
+  if (!url) {
+    // Снимок читаем с правами владельца (RLS pult_is_owner), ключ service role не нужен.
+    const [snap, rows] = await Promise.all([
+      sb.from("pult_calendar_snap").select("snapshot_at, events").eq("id", 1).maybeSingle(),
+      sb.from("pult_calendar_cache").select("title, start_at, end_at, all_day, link, recurring").order("start_at").limit(2000),
+    ]);
+    if (snap.error || rows.error) return json({ error: `кэш календаря: ${(snap.error ?? rows.error)!.message}` }, 502);
+    if (!snap.data) return json({ configured: false, source: "cache", events: [], fetched_at: new Date().toISOString() });
+    const day = (s: string, allDay: boolean) => allDay ? new Date(s + "T00:00:00+06:00") : new Date(s); // весь день - по Омску
+    const events = (rows.data ?? [])
+      .filter((r) => day(r.end_at, r.all_day) >= from && day(r.start_at, r.all_day) <= to)
+      .map((r) => ({ title: r.title, start: r.start_at, end: r.end_at, all_day: r.all_day, link: r.link, recurring: r.recurring }));
+    const age = Date.now() - new Date(snap.data.snapshot_at).getTime();
+    return json({ configured: true, source: "cache", events, fetched_at: snap.data.snapshot_at, stale: age > 3 * 3600e3 });
+  }
 
   let text: string;
   try {
@@ -91,5 +108,5 @@ Deno.serve(async (req) => {
     }
   }
   out.sort((a, b) => a.start.localeCompare(b.start));
-  return json({ configured: true, events: out, fetched_at: new Date().toISOString() });
+  return json({ configured: true, source: "ical", events: out, fetched_at: new Date().toISOString() });
 });

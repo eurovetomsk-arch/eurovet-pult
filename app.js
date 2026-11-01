@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.7.1',
+  version: '0.7.2',
   tz: 'Asia/Omsk',
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
@@ -20,6 +20,13 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 // ---------- время по Омску ----------
 const dayKey = (d) => new Intl.DateTimeFormat('en-CA', { timeZone: CFG.tz }).format(d);
 const hhmm = (d) => new Intl.DateTimeFormat('ru-RU', { timeZone: CFG.tz, hour: '2-digit', minute: '2-digit' }).format(d);
+// Календарь (0.7.2, ТЗ 805): снимок кладёт агент раз в 30 мин; старше 3 ч - предупреждение
+const calStamp = () => {
+  const d = new Date(state.cal.fetched_at), dd = dayKey(d) === today0() ? '' : ' ' + new Intl.DateTimeFormat('ru-RU', { timeZone: CFG.tz, day: '2-digit', month: '2-digit' }).format(d);
+  return `обновлено${dd} ${hhmm(d)}`;
+};
+const calStale = () => state.cal && state.cal.configured !== false && (state.cal.stale || Date.now() - new Date(state.cal.fetched_at) > 3 * 36e5)
+  ? `<div class="banner org">Календарь не обновлялся с ${esc(calStamp().replace('обновлено ', ''))}: показан последний снимок.</div>` : '';
 const dayTitle = (key) => {
   const d = new Date(key + 'T12:00:00+06:00');
   const t = new Intl.DateTimeFormat('ru-RU', { timeZone: CFG.tz, weekday: 'short', day: '2-digit', month: '2-digit' }).format(d);
@@ -189,7 +196,7 @@ R.today = (m) => {
   const tomM = meetings().filter((e) => evDay(e) === tom && !isMarked(e));
   const tomR = rem.filter((r) => !r.done && r.day === tom);
   const calWarn = !state.cal ? `<div class="banner org">Календарь ещё не загружен${state.calError ? ': ' + esc(state.calError) : ''}.</div>`
-    : state.calError ? `<div class="banner org">Встречи от ${hhmm(new Date(state.cal.fetched_at))}: ${esc(state.calError)}</div>` : '';
+    : state.calError ? `<div class="banner org">Встречи: ${esc(calStamp())}, ${esc(state.calError)}</div>` : calStale();
   return `<div class="row"><div class="grow"><div class="big">${left.length}</div><div class="mute">${left.length < mt.length ? 'встреч осталось' : 'встреч сегодня'}</div></div>
       <div class="grow"><div class="big" style="color:${remNow.length ? 'var(--red)' : 'inherit'}">${remNow.length}</div><div class="mute">напоминаний на сегодня</div></div>
       <div class="grow tap" data-tab-go="mail"><div class="big">${state.mail ? state.mail.reply_count : '-'}</div><div class="mute">писем ответить</div></div></div>
@@ -220,13 +227,13 @@ R.mail = (m) => {
 // Старые виды панелей (до 0.7): остаются рабочими, если их включить в «Панелях»
 function grouped(evs, empty) {
   if (!state.cal) return `<div class="banner org">Календарь ещё не загружен${state.calError ? ': ' + esc(state.calError) : ''}.</div>`;
-  if (state.cal.configured === false) return '<div class="banner org">Календарь не подключён: нет секретной ссылки iCal.</div>';
+  if (state.cal.configured === false) return '<div class="banner org">Календарь ещё не подключён: снимка календаря пока нет.</div>';
   const by = {};
   for (const e of visible(evs)) (by[evDay(e)] ||= []).push(e);
   const keys = Object.keys(by).sort();
   if (!keys.length) return `<p class="mute">${evs.length ? 'Все встречи отмечены' : empty}</p>`;
   return keys.map((k) => `<div class="day">${esc(dayTitle(k))}</div><ul>${by[k].map((e) => meetLine(e)).join('')}</ul>`).join('')
-    + `<p class="mute">данные от ${hhmm(new Date(state.cal.fetched_at))}</p>`;
+    + calStale() + `<p class="mute">${esc(calStamp())}</p>`;
 }
 function window7(days) {
   const today = today0(), end = dayKey(new Date(Date.now() + (days - 1) * 864e5));
@@ -283,7 +290,7 @@ R.calendar = (m) => {
   return `<div class="seg" role="tablist"><button data-cal-mode="m" class="${calMode === 'm' ? 'on' : ''}">Встречи<span class="n m">${nM}</span></button><button data-cal-mode="r" class="${calMode === 'r' ? 'on' : ''}">Напоминания<span class="n r">${nR}</span></button></div>
     <div class="cal" data-swipe-cal>${cells}</div><div class="day">${esc(dayTitle(sel))}</div>${list}
     <p class="hint">${calMode === 'm' ? 'смахни календарь влево: напоминания · нажми на встречу, чтобы изменить' : 'кружок: сделано · строку влево: Завтра / Изменить / В архив'}</p>
-    <p class="mute">встречи из Google Календаря от ${hhmm(new Date(state.cal.fetched_at))}${state.calError ? ' (' + esc(state.calError) + ')' : ''}</p>`;
+    ${calStale()}<p class="mute">встречи из Google Календаря, ${esc(calStamp())}${state.calError ? ' (' + esc(state.calError) + ')' : ''}</p>`;
 };
 document.addEventListener('click', (ev) => {
   const t = ev.target.closest('[data-act="toggle-marked"]');
