@@ -113,7 +113,24 @@ async function load() {
     state.calError = null;
     state.cal = cal.data;
   }
+  // 0.7.2 (ТЗ 805): секрета iCal нет - читаем снимок агента прямо из базы (RLS: только владелец).
+  // Если pult-calendar v6 уже отдаёт снимок сам (source 'cache'), этот шаг не нужен.
+  if (state.cal && state.cal.configured === false && state.cal.source !== 'cache') {
+    const c = await calFromCache().catch((e) => ({ error: e }));
+    if (c && !c.error) { state.cal = c; state.calError = null; }
+  }
   cache.set({ state: { ...state, offline: false }, at: new Date().toISOString() });
+}
+
+async function calFromCache() {
+  const [snap, rows] = await Promise.all([
+    sb.from('pult_calendar_snap').select('snapshot_at').eq('id', 1).maybeSingle(),
+    sb.from('pult_calendar_cache').select('title,start_at,end_at,all_day,link,recurring').gt('snapshot_at', '2000-01-01').order('start_at').limit(2000),
+  ]);
+  if (snap.error || rows.error) return { error: snap.error || rows.error };
+  if (!snap.data) return { error: 'снимка нет' };
+  const events = rows.data.map((r) => ({ title: r.title, start: r.start_at, end: r.end_at, all_day: r.all_day, link: r.link, recurring: r.recurring }));
+  return { configured: true, source: 'cache', events, fetched_at: snap.data.snapshot_at, stale: Date.now() - new Date(snap.data.snapshot_at) > 3 * 36e5 };
 }
 
 // ---------- панели ----------

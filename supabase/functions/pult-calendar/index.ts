@@ -33,7 +33,7 @@ Deno.serve(async (req) => {
     // Снимок читаем с правами владельца (RLS pult_is_owner), ключ service role не нужен.
     const [snap, rows] = await Promise.all([
       sb.from("pult_calendar_snap").select("snapshot_at, events").eq("id", 1).maybeSingle(),
-      sb.from("pult_calendar_cache").select("title, start_at, end_at, all_day, link, recurring").order("start_at").limit(2000),
+      sb.from("pult_calendar_cache").select("title, start_at, end_at, all_day, link, recurring").gt("snapshot_at", "2000-01-01").order("start_at").limit(2000), // погашенные строки: -infinity
     ]);
     if (snap.error || rows.error) return json({ error: `кэш календаря: ${(snap.error ?? rows.error)!.message}` }, 502);
     if (!snap.data) return json({ configured: false, source: "cache", events: [], fetched_at: new Date().toISOString() });
