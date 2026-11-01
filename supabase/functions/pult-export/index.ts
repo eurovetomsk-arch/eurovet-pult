@@ -129,6 +129,23 @@ async function iphonePlan() {
 // Зеркало списка iPhone (по умолчанию «Не забыть»): Команда каждый раз шлёт все его открытые напоминания,
 // строка «Название|2026-11-02T09:00:00+06:00» (дата может быть пустой). Заметки не берём: там бывают ссылки с паролями.
 // Оригиналы на iPhone не трогаем (повторы, свои списки). Обратно на iPhone зеркало не уходит: план его пропускает.
+// Дата из Команды: ISO 8601 или как iPhone пишет по-русски («2 нояб. 2026 г., 9:00», «02.11.2026, 09:00»).
+// Без часового пояса - время Омска; без времени - 09:00.
+const MON = ["янв", "фев", "мар", "апр", "ма", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+function phoneDate(d: string): string | null {
+  d = d.replace(/\u00a0|\u202f/g, " ").trim();
+  if (!d) return null;
+  if (/^\d{4}-\d{2}-\d{2}T/.test(d)) { const t = Date.parse(d); return Number.isNaN(t) ? null : new Date(t).toISOString(); }
+  let y = 0, m = -1, day = 0;
+  const num = d.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+  const ru = d.toLowerCase().match(/(\d{1,2})\s+([а-яё]+)\.?\s+(\d{4})/);
+  if (num) { day = +num[1]; m = +num[2] - 1; y = +num[3]; }
+  else if (ru) { day = +ru[1]; y = +ru[3]; m = MON.findIndex((p) => ru[2].startsWith(p)); }
+  if (m < 0 || m > 11 || !day || !y) return null;
+  const tm = d.match(/(\d{1,2}):(\d{2})/);
+  const hh = tm ? +tm[1] : 9, mm = tm ? +tm[2] : 0;
+  return new Date(Date.UTC(y, m, day, hh - 6, mm)).toISOString();
+}
 async function iphoneMirror(raw: string, src: string) {
   const rows: { title: string; due_at: string | null }[] = [];
   for (const line of raw.split(/\r?\n/)) {
@@ -136,8 +153,7 @@ async function iphoneMirror(raw: string, src: string) {
     const title = (i >= 0 ? line.slice(0, i) : line).trim().slice(0, 300);
     const d = i >= 0 ? line.slice(i + 1).trim() : "";
     if (!title) continue;
-    const t = d ? Date.parse(d) : NaN;
-    rows.push({ title, due_at: Number.isNaN(t) ? null : new Date(t).toISOString() });
+    rows.push({ title, due_at: phoneDate(d) });
   }
   const { data: cur, error } = await admin.from("pult_tasks").select("id,title,due_at,owner_id")
     .eq("phone_src", src).is("done_at", null).is("archived_at", null).limit(2000);
