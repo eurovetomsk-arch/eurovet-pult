@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.8.2',
+  version: '0.8.3',
   tz: 'Asia/Omsk',
   gmail: 'eurovet.omsk@gmail.com', // ящик, где ярлыки «Статус/…» (снимок почты)
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
@@ -243,7 +243,6 @@ R.today = (m) => {
   const tile = (n, l, go, red) => `<div class="tile tap" ${go}><div class="big"${red ? ' style="color:var(--red)"' : ''}>${n}</div><div class="mute">${l}</div></div>`;
   return `<div class="tiles">${tile(left.length, left.length < mt.length ? 'встреч осталось' : 'встреч сегодня', 'data-tab-go="meet"')}
       ${tile(remNow.length, 'напоми­наний', 'data-tab-go="rem"', remNow.length)}
-      ${tile(ord.length, yes ? `ждут да: ${yes}` : 'поручений', 'data-tab-go="orders"', yes)}
       ${tile(state.mail ? state.mail.reply_count : '-', 'писем ответить', 'data-act="mail-sheet"', state.mail?.reply_count)}</div>
     ${shiftLineToday()}${calWarn}
     <div class="card"><h2>Встречи сегодня</h2><ul>${left.map((e) => (e.src === 'own' ? remLine(e) : meetLine(e))).join('') || `<li class="mute">${mt.length + omT.length ? 'Все встречи дня отмечены' : 'Встреч нет'}</li>`}${omT.filter((r) => r.done).map((r) => remLine(r)).join('')}</ul>
@@ -454,11 +453,13 @@ function shiftMonth(mode, d) {
 
 // ---------- вкладки ----------
 // 0.8: у каждого своя вкладка. Почта - цифра на «Сегодня» (нажал - подробности шторкой).
-const TABS = [['today', 'Сегодня', '🏠'], ['meet', 'Встречи', '📅'], ['rem', 'Напоминания', '🔔'], ['shift', 'Смены', '🩺'], ['orders', 'Поручения', '✉️']];
+// 0.8.3: вкладка «Поручения» скрыта по слову Михаила 02.11 (за 3 дня 2 поручения, ответ 40-50 мин).
+// Код R.orders и таблицы pult_inbox/asst_orders остаются: вернуть - добавить строку ['orders', 'Поручения', '✉️'].
+const TABS = [['today', 'Сегодня', '🏠'], ['meet', 'Встречи', '📅'], ['rem', 'Напоминания', '🔔'], ['shift', 'Смены', '🩺']];
 const FIXED = { meet: ['Встречи', 'meetTab'], rem: ['Напоминания', 'remTab'], shift: ['Мои смены', 'shiftTab'] };
 // Панели из реестра: на «Сегодня» - сама «Сегодня» и свои панели (заметка, события по слову); на «Поручениях» - поручения.
 // Старые панели (список напоминаний, встречи на 7 дней, смены на 7 дней, календарь, почта, клиники) заменены вкладками.
-const tabOf = (m) => (m.kind === 'orders' ? 'orders' : m.kind === 'today' || m.kind === 'note' || (m.kind === 'events' && m.config?.match) ? 'today' : null);
+const tabOf = (m) => (m.kind === 'orders' ? (TABS.some((t) => t[0] === 'orders') ? 'orders' : null) : m.kind === 'today' || m.kind === 'note' || (m.kind === 'events' && m.config?.match) ? 'today' : null);
 const oldTab = lsGet('pult.tab');
 let tab = TABS.some((t) => t[0] === oldTab) ? oldTab : oldTab === 'cal' ? 'meet' : 'today';
 function setTab(t) { tab = t; lsSet('pult.tab', t); closeSheet(); renderBoard(); window.scrollTo(0, 0); }
@@ -549,7 +550,6 @@ function meetSheet(e) {
     <div class="mute" style="margin-bottom:12px">${esc(dayTitle(evDay(e)))} · ${esc(evTime(e))}${e.recurring ? ' · повторяется' : ''}</div>
     ${marks ? `<div class="btns">${marks}</div>` : ''}
     ${isGoogleLink(e.link) ? `<p><a class="btn" href="${esc(e.link)}" target="_blank" rel="noopener">Изменить в Google Календаре ›</a></p>` : ''}
-    <p><button class="ghost" style="width:100%" data-act="move-order" data-k="${esc(k)}">Перенести… (поручение ассистенту)</button></p>
     <p class="mute">Встреча правится в Google Календаре: так она одна и везде одинаковая. Пульт подтянет изменение при следующем обновлении.</p>`);
 }
 function gRemSheet(e) {
