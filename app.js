@@ -5,8 +5,9 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.8.1',
+  version: '0.8.2',
   tz: 'Asia/Omsk',
+  gmail: 'eurovet.omsk@gmail.com', // ящик, где ярлыки «Статус/…» (снимок почты)
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
 };
@@ -261,11 +262,13 @@ R.mail = (m) => {
   const h = omskHour();
   const night = h >= CFG.nightFrom || h < CFG.nightTo;
   const stale = age > (state.settings?.stale_after_minutes || 120) && !night;
+  // Ссылки открывают Gmail на нужном ярлыке; сами письма в пульт не попадают (только числа).
+  const gm = (label) => `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(CFG.gmail)}#label/${encodeURIComponent(label).replace(/%20/g, '+')}`;
+  const cell = (n, l, label, red) => `<a class="mcell" href="${gm(label)}" target="_blank" rel="noopener"><div class="big"${red ? ' style="color:var(--red)"' : ''}>${n ?? '-'}</div><div class="mute">${l} ›</div></a>`;
   return `${stale ? `<div class="banner red">Данные почты устарели: снимок от ${hhmm(new Date(s.taken_at))}, ${Math.round(age / 60)} ч назад. Проверь агента снимка.</div>` : ''}
-    <div class="grid2"><div><div class="big" style="color:var(--red)">${s.reply_count}</div><div class="mute">Ответить</div></div>
-      <div><div class="big">${s.plan_count}</div><div class="mute">В плане</div></div>
-      <div><div class="big">${s.wait_count ?? '-'}</div><div class="mute">Ждём ответа</div></div>
-      <div><div class="big">${s.inbox_count ?? '-'}</div><div class="mute">Во входящих</div></div></div>
+    <div class="grid2">${cell(s.reply_count, 'Ответить', 'Статус/1 Ответить', true)}${cell(s.plan_count, 'В плане', 'Статус/3 В плане')}
+      ${cell(s.wait_count, 'Ждём ответа', 'Статус/2 Ждём ответа')}<a class="mcell" href="https://mail.google.com/mail/u/?authuser=${encodeURIComponent(CFG.gmail)}#inbox" target="_blank" rel="noopener"><div class="big">${s.inbox_count ?? '-'}</div><div class="mute">Во входящих ›</div></a></div>
+    <p class="mute">нажми на цифру: откроется Gmail с этими письмами · цифра «Ответить» уменьшается, когда с письма снят ярлык «1 Ответить»</p>
     <p class="mute">данные от ${hhmm(new Date(s.taken_at))}${night ? ', ночью не обновляется' : ''}</p>`;
 };
 
