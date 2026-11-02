@@ -94,6 +94,29 @@ li.swipe .acts button{width:70px;border-radius:0;padding:0;color:#fff;font-size:
 button.danger{color:var(--red)}
 a.btn{display:block;text-align:center;background:var(--acc);color:#fff;border-radius:10px;padding:10px 14px;text-decoration:none}
 body.noscroll{overflow:hidden}
+/* 0.8: вкладки Встречи / Напоминания / Смены, месяц с листанием, плитки «Сегодня» */
+#tabs button{font-size:10px}
+.mh{display:flex;align-items:center;justify-content:space-between;margin:0 0 6px}
+.mh b{font-size:17px}.mh button{font-size:20px;padding:2px 14px;line-height:1.2}
+.cal{gap:3px}.cal-d{min-height:42px;padding:4px 0}
+.cal-d.out{opacity:.3}
+.cal-d.mode-m i{color:var(--acc)}
+.cal-d.sh{color:#fff;border:0}.cal-d.sh i{color:#fff;font-size:10px;font-weight:600}
+.cal-d.sh.cal-past{opacity:.5}.cal-d.sh-sel{outline:3px solid #f59e0b;outline-offset:-3px}
+.cal-d.sh.cal-today{outline:2px solid var(--ink);outline-offset:1px}
+li.sh-on{background:var(--bg)}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px}
+.tile{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px 4px;text-align:center}
+.tile .big{font-size:26px}.tile .mute{font-size:11px;line-height:1.2}
+.shline{display:flex;gap:4px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:9px 12px;margin-bottom:10px;font-size:15px}
+.shline .chev{margin-left:auto}
+details.later{background:var(--bg);border-radius:10px;padding:9px 12px;margin-top:8px}
+details.later summary{color:var(--mute);font-size:14px;cursor:pointer}
+.bar{width:4px;align-self:stretch;border-radius:2px;flex:none}
+.shsum{display:flex;gap:8px;margin-bottom:8px}.shsum div{flex:1;background:var(--bg);border-radius:10px;padding:6px 8px}
+.shsum b{font-size:22px;display:block}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-size:13px;color:var(--mute);margin:4px 0 8px}
+.legend span::before{content:'';display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px;background:var(--c);vertical-align:-1px}
 </style>
 </head>
 <body>

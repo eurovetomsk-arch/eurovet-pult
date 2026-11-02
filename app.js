@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.7.2',
+  version: '0.8.0',
   tz: 'Asia/Omsk',
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
@@ -80,7 +80,7 @@ async function load() {
     sb.from('pult_tasks').select('*').is('archived_at', null).or(`done_at.is.null,done_at.gt.${since}`).order('due_at', { ascending: true, nullsFirst: false }),
     sb.from('pult_mail_snapshot').select('*').order('taken_at', { ascending: false }).limit(1),
     sb.from('pult_settings').select('stale_after_minutes').limit(1),
-    sb.functions.invoke('pult-calendar?days=35', { method: 'GET' }).catch((e) => ({ error: e })),
+    calFromCache().catch((e) => ({ error: e })), // 0.8: снимок целиком (70 суток), без предела функции
     sb.from('asst_orders').select('id,created_at,body,route,status,due_at,result,needs_yes,closed_at')
       .or(`closed_at.is.null,closed_at.gt.${new Date(Date.now() - 7 * 864e5).toISOString()}`)
       .order('created_at', { ascending: false }).limit(100),
@@ -106,18 +106,18 @@ async function load() {
   state.inbox = inbox.error ? null : inbox.data;
   state.archived = arch.error ? [] : arch.data;
   state.marks = marks.error ? (old.state?.marks || {}) : Object.fromEntries(marks.data.map((x) => [x.event_key, x.mark]));
-  if (cal.error || cal.data?.error) {
-    state.calError = (cal.data && cal.data.error) || 'календарь не ответил';
+  // Снимок агента читаем прямо из базы (RLS: только владелец). Нет снимка - запасной путь через функцию pult-calendar.
+  let c = cal;
+  if (!c || c.error) {
+    const f = await sb.functions.invoke('pult-calendar?days=40', { method: 'GET' }).catch((e) => ({ error: e }));
+    c = f.error || f.data?.error ? { error: (f.data && f.data.error) || 'календарь не ответил' } : f.data;
+  }
+  if (c.error) {
+    state.calError = typeof c.error === 'string' ? c.error : 'календарь не ответил';
     state.cal = old.state?.cal || null;
   } else {
     state.calError = null;
-    state.cal = cal.data;
-  }
-  // 0.7.2 (ТЗ 805): секрета iCal нет - читаем снимок агента прямо из базы (RLS: только владелец).
-  // Если pult-calendar v6 уже отдаёт снимок сам (source 'cache'), этот шаг не нужен.
-  if (state.cal && state.cal.configured === false && state.cal.source !== 'cache') {
-    const c = await calFromCache().catch((e) => ({ error: e }));
-    if (c && !c.error) { state.cal = c; state.calError = null; }
+    state.cal = c;
   }
   cache.set({ state: { ...state, offline: false }, at: new Date().toISOString() });
 }
@@ -136,20 +136,28 @@ async function calFromCache() {
 // ---------- панели ----------
 const R = {};
 
-// Встречи и напоминания раздельно (0.7). В Google Календаре пока лежат и напоминания из почты:
-// сроки оплат 🔴/🟠/💰, «[Почта] ...», «Оплата ...», дни рождения 🎂. Пульт показывает их во вкладке «Напоминания».
+// Встречи, напоминания и смены раздельно (0.8). В Google Календаре лежат и напоминания из почты:
+// сроки оплат 🔴/🟠/💰, «[Почта] ...», «Оплата ...», дни рождения 🎂 - они во вкладке «Напоминания».
+// Смены - события «Смена · <адрес клиники>» - во вкладке «Смены».
 const REM_RE = /^\s*(🔴|🟠|💰|\[Почта\]|Оплата|🎂)/u;
+const SHIFT_RE = /^\s*Смена(?=[\s·:,-]|$)/iu; // \b не работает с кириллицей
 const isRemEv = (e) => REM_RE.test(e.title);
+const isShift = (e) => SHIFT_RE.test(e.title);
 const calEvents = () => state.cal?.events || [];
-const meetings = () => calEvents().filter((e) => !isRemEv(e));
+const meetings = () => calEvents().filter((e) => !isRemEv(e) && !isShift(e));
+const shifts = () => calEvents().filter(isShift);
 const today0 = () => dayKey(new Date());
 const tomorrow0 = () => dayKey(new Date(Date.now() + 864e5));
 const isGoogleLink = (u) => typeof u === 'string' && u.startsWith('https://www.google.com/calendar/event?eid=');
 
-// Единый список напоминаний: свои (pult_tasks) + из Google Календаря (только чтение, до переноса)
+// Единый список напоминаний: свои (pult_tasks) + из Google Календаря (только чтение, до переноса).
+// Одно и то же в двух местах (то же название, тот же день) показываем один раз: своё важнее.
+const normT = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 function reminders() {
   const own = state.tasks.map((t) => ({ src: 'own', id: t.id, title: t.title, due: t.due_at, day: t.due_at ? dayKey(new Date(t.due_at)) : null, done: !!t.done_at, t }));
-  const g = calEvents().filter(isRemEv).map((e) => ({ src: 'google', key: evKey(e), title: e.title, due: e.start, day: evDay(e), done: isMarked(e), allDay: e.all_day, e }));
+  const seen = new Set(own.map((r) => normT(r.title) + '|' + r.day));
+  const g = calEvents().filter(isRemEv).map((e) => ({ src: 'google', key: evKey(e), title: e.title, due: e.start, day: evDay(e), done: isMarked(e), allDay: e.all_day, e }))
+    .filter((x) => !seen.has(normT(x.title) + '|' + x.day));
   for (const x of g) evIndex.set(x.key, x.e);
   return own.concat(g).sort((a, b) => String(a.due || '9').localeCompare(String(b.due || '9')));
 }
@@ -199,7 +207,17 @@ function remLine(r, withDay = false) {
     <div class="mute">${withDay ? remWhen(r) : t.due_at ? hhmm(new Date(t.due_at)) : 'без срока'}${t.reminded_at ? ' · уведомлено' : ''}${t.note ? ' · 📝' : ''}</div></div></div></li>`;
 }
 
-// ---------- вкладка «Сегодня» ----------
+// ---------- вкладка «Сегодня»: 4 цифры, смена, только сегодня и завтра ----------
+const shiftClinic = (e) => (e.title.split('·')[1] || '').trim() || 'без адреса';
+const shiftHours = (e) => (e.all_day ? 0 : (new Date(e.end) - new Date(e.start)) / 36e5);
+function shiftLineToday() {
+  const today = today0();
+  const next = shifts().filter((e) => evDay(e) >= today && new Date(e.end) > new Date()).sort((a, b) => a.start.localeCompare(b.start))[0];
+  if (!next) return '';
+  const k = evDay(next), same = shifts().filter((e) => evDay(e) === k).sort((a, b) => a.start.localeCompare(b.start));
+  const when = k === today ? 'Сегодня смена' : k === tomorrow0() ? 'Завтра смена' : 'Следующая смена: ' + dayTitle(k);
+  return `<div class="shline tap" data-tab-go="shift"><span>🩺</span><span class="grow">${esc(when)}: <b>${esc(shiftClinic(next))}</b>, ${same.map((e) => esc(evTime(e))).join(', ')}</span><span class="chev">›</span></div>`;
+}
 R.today = (m) => {
   const today = today0(), tom = tomorrow0();
   const mt = meetings().filter((e) => evDay(e) === today);
@@ -212,19 +230,23 @@ R.today = (m) => {
   const past = meetings().filter((e) => !e.all_day && evDay(e) < today && evDay(e) >= from && !state.marks?.[evKey(e)]);
   const tomM = meetings().filter((e) => evDay(e) === tom && !isMarked(e));
   const tomR = rem.filter((r) => !r.done && r.day === tom);
+  const ord = (state.orders || []).filter((o) => !o.closed_at), yes = ord.filter((o) => o.needs_yes).length;
   const calWarn = !state.cal ? `<div class="banner org">Календарь ещё не загружен${state.calError ? ': ' + esc(state.calError) : ''}.</div>`
     : state.calError ? `<div class="banner org">Встречи: ${esc(calStamp())}, ${esc(state.calError)}</div>` : calStale();
-  return `<div class="row"><div class="grow"><div class="big">${left.length}</div><div class="mute">${left.length < mt.length ? 'встреч осталось' : 'встреч сегодня'}</div></div>
-      <div class="grow"><div class="big" style="color:${remNow.length ? 'var(--red)' : 'inherit'}">${remNow.length}</div><div class="mute">напоминаний на сегодня</div></div>
-      <div class="grow tap" data-tab-go="mail"><div class="big">${state.mail ? state.mail.reply_count : '-'}</div><div class="mute">писем ответить</div></div></div>
-    ${calWarn}
-    <h3>Встречи</h3><ul>${left.map((e) => meetLine(e)).join('') || `<li class="mute">${mt.length ? 'Все встречи дня отмечены' : 'Встреч нет'}</li>`}</ul>
-    ${past.length ? `<details class="banner org"><summary>Отметь прошедшие встречи: ${past.length}</summary><ul>${past.map((e) => meetLine(e, true)).join('')}</ul></details>` : ''}
-    <h3>Напоминания</h3>${pushHint()}<ul>${remNow.map((r) => remLine(r, r.day !== today)).join('') || '<li class="mute">На сегодня напоминаний нет</li>'}${remDoneToday.map((r) => remLine(r)).join('')}</ul>
-    ${noDue.length ? `<h3>Без срока</h3><ul>${noDue.map((r) => remLine(r)).join('')}</ul>` : ''}
-    <form data-form="quick" class="row" style="margin-top:8px"><input name="title" placeholder="Новое напоминание" maxlength="300" class="grow" autocomplete="off"><button aria-label="Добавить">＋</button></form>
-    <h3>Завтра, ${esc(dayTitle(tom).replace(/^Завтра, /, ''))}</h3><ul>${tomM.map((e) => meetLine(e)).join('')}${tomR.map((r) => remLine(r)).join('') || (tomM.length ? '' : '<li class="mute">Пусто</li>')}</ul>`;
+  const tile = (n, l, go, red) => `<div class="tile tap" ${go}><div class="big"${red ? ' style="color:var(--red)"' : ''}>${n}</div><div class="mute">${l}</div></div>`;
+  return `<div class="tiles">${tile(left.length, left.length < mt.length ? 'встреч осталось' : 'встреч сегодня', 'data-tab-go="meet"')}
+      ${tile(remNow.length, 'напоми­наний', 'data-tab-go="rem"', remNow.length)}
+      ${tile(ord.length, yes ? `ждут да: ${yes}` : 'поручений', 'data-tab-go="orders"', yes)}
+      ${tile(state.mail ? state.mail.reply_count : '-', 'писем ответить', 'data-act="mail-sheet"', state.mail?.reply_count)}</div>
+    ${shiftLineToday()}${calWarn}
+    <div class="card"><h2>Встречи сегодня</h2><ul>${left.map((e) => meetLine(e)).join('') || `<li class="mute">${mt.length ? 'Все встречи дня отмечены' : 'Встреч нет'}</li>`}</ul>
+    ${past.length ? `<details class="banner org"><summary>Отметь прошедшие встречи: ${past.length}</summary><ul>${past.map((e) => meetLine(e, true)).join('')}</ul></details>` : ''}</div>
+    <div class="card"><h2>Напоминания</h2>${pushHint()}<ul>${remNow.map((r) => remLine(r, r.day !== today)).join('') || '<li class="mute">На сегодня напоминаний нет</li>'}${remDoneToday.map((r) => remLine(r)).join('')}</ul>
+    ${noDue.length ? `<details><summary class="mute">Без срока: ${noDue.length}</summary><ul>${noDue.map((r) => remLine(r)).join('')}</ul></details>` : ''}
+    <form data-form="quick" class="row" style="margin-top:8px"><input name="title" placeholder="Новое напоминание" maxlength="300" class="grow" autocomplete="off"><button aria-label="Добавить">＋</button></form></div>
+    <div class="card"><h2>Завтра, ${esc(dayTitle(tom).replace(/^Завтра, /, ''))}</h2><ul>${tomM.map((e) => meetLine(e)).join('')}${tomR.map((r) => remLine(r)).join('') || (tomM.length ? '' : '<li class="mute">Пусто</li>')}</ul></div>`;
 };
+R.today.bare = true; // сама рисует свои карточки
 
 R.mail = (m) => {
   const s = state.mail;
@@ -271,90 +293,169 @@ R.tasks = (m) => {
   return `${pushHint()}<ul>${open.map((r) => remLine(r, true)).join('') || '<li class="mute">Напоминаний нет</li>'}</ul>`;
 };
 
-// ---------- вкладка «Календарь»: Встречи | Напоминания ----------
-let calDay = null;
-let calMode = lsGet('pult.calMode') === 'r' ? 'r' : 'm';
-R.calendar = (m) => {
-  if (!state.cal || state.cal.configured === false) return grouped([], '');
-  const today = today0();
-  const t = new Date(today + 'T12:00:00+06:00');
-  const monday = new Date(t.getTime() - ((t.getUTCDay() + 6) % 7) * 864e5);
-  const rem = reminders();
-  const byM = {}, byR = {};
-  for (const e of meetings()) if (!isMarked(e)) (byM[evDay(e)] ||= []).push(e);
-  for (const r of rem) if (r.day && !r.done) (byR[r.day] ||= []).push(r);
-  const nM = meetings().filter((e) => evDay(e) >= today && !isMarked(e)).length;
-  const nR = rem.filter((r) => !r.done && (r.src === 'own' || r.day >= today)).length; // прошедшие события Google не считаем
-  const by = calMode === 'm' ? byM : byR;
-  const sel = calDay || today;
-  let cells = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'].map((d) => `<div class="cal-h">${d}</div>`).join('');
-  for (let i = 0; i < 35; i++) {
-    const k = dayKey(new Date(monday.getTime() + i * 864e5));
+// ---------- вкладки «Встречи», «Напоминания», «Смены»: один вид - месяц с точками ----------
+// Месяц листается ‹ › и смахиванием сетки. Нажал день - ниже список дня.
+const view = { m: lsGet('pult.view.m') === 'list' ? 'list' : 'cal', r: lsGet('pult.view.r') === 'list' ? 'list' : 'cal' };
+const monOff = { m: 0, r: 0, s: 0 };
+const selDay = { m: null, r: null, s: null };
+const MONTHS = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+const ymOf = (off) => { const [y, mo] = today0().split('-').map(Number); const t = (y * 12 + mo - 1) + off; return [Math.floor(t / 12), t % 12]; };
+const keyOf = (y, mo, d) => `${y}-${String(mo + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+const monthDays = (y, mo) => new Date(Date.UTC(y, mo + 1, 0)).getUTCDate();
+// Сетка месяца: cell(key, inMonth) -> html кнопки дня
+function monthGrid(mode, cell) {
+  const [y, mo] = ymOf(monOff[mode]);
+  const lead = (new Date(Date.UTC(y, mo, 1)).getUTCDay() + 6) % 7, n = monthDays(y, mo);
+  const rows = Math.ceil((lead + n) / 7);
+  let h = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'].map((d) => `<div class="cal-h">${d}</div>`).join('');
+  for (let i = 0; i < rows * 7; i++) {
+    const k = dayKey(new Date(Date.UTC(y, mo, 1 + i - lead, 6)));
+    h += cell(k, i >= lead && i < lead + n);
+  }
+  return `<div class="mh"><button class="ghost small" data-mon="${mode}" data-d="-1" aria-label="Прошлый месяц">‹</button><b>${MONTHS[mo]} ${y}</b><button class="ghost small" data-mon="${mode}" data-d="1" aria-label="Следующий месяц">›</button></div>
+    <div class="cal" data-swipe-mon="${mode}">${h}</div>${horizonNote(y, mo)}`;
+}
+// Снимок календаря Google: неделя назад и 70 суток вперёд. Дальше - честно говорим, что не загружено.
+function horizonNote(y, mo) {
+  if (!state.cal?.fetched_at) return '';
+  const lim = dayKey(new Date(new Date(state.cal.fetched_at).getTime() + 69 * 864e5));
+  return keyOf(y, mo, monthDays(y, mo)) > lim ? `<p class="mute">Из Google Календаря загружено до ${esc(dayTitle(lim))}.</p>` : '';
+}
+function dotCell(mode, by) {
+  const today = today0(), sel = selDay[mode] || today;
+  return (k, inM) => {
     const n = (by[k] || []).length;
-    const cls = ['cal-d', 'mode-' + calMode, k === today ? 'cal-today' : '', k === sel ? 'cal-sel' : '', k < today ? 'cal-past' : ''].join(' ');
-    cells += `<button class="${cls}" data-day="${k}"><span>${Number(k.slice(8))}</span><i>${n ? (n > 3 ? '•••' : '•'.repeat(n)) : '&nbsp;'}</i></button>`;
-  }
-  let list;
-  if (calMode === 'm') {
-    const all = meetings().filter((e) => evDay(e) === sel);
-    list = `<ul>${visible(all).map((e) => meetLine(e)).join('') || `<li class="mute">${all.length ? 'Все встречи дня отмечены' : 'Встреч нет'}</li>`}</ul>${hiddenNote(all)}`;
-  } else {
-    const all = rem.filter((r) => r.day === sel);
-    list = `<ul>${all.map((r) => remLine(r)).join('') || '<li class="mute">Напоминаний нет</li>'}</ul>
-      <p style="margin:10px 0 0"><button style="width:100%" data-act="new-on" data-day="${sel}">＋ Напоминание на ${esc(dayTitle(sel).replace(/^(Сегодня|Завтра), /, ''))}</button></p>
-      ${state.archived?.length ? `<details style="margin-top:10px"><summary class="mute">Архив напоминаний: ${state.archived.length}</summary><ul>${state.archived.map((a) => `<li class="row"><div class="grow mute">${esc(a.title)}${a.due_at ? ' · ' + esc(dayTitle(dayKey(new Date(a.due_at)))) : ''}</div><button class="ghost small" data-unarchive="${a.id}">Вернуть</button></li>`).join('')}</ul></details>` : ''}`;
-  }
-  return `<div class="seg" role="tablist"><button data-cal-mode="m" class="${calMode === 'm' ? 'on' : ''}">Встречи<span class="n m">${nM}</span></button><button data-cal-mode="r" class="${calMode === 'r' ? 'on' : ''}">Напоминания<span class="n r">${nR}</span></button></div>
-    <div class="cal" data-swipe-cal>${cells}</div><div class="day">${esc(dayTitle(sel))}</div>${list}
-    <p class="hint">${calMode === 'm' ? 'смахни календарь влево: напоминания · нажми на встречу, чтобы изменить' : 'кружок: сделано · строку влево: Завтра / Изменить / В архив'}</p>
-    ${calStale()}<p class="mute">встречи из Google Календаря, ${esc(calStamp())}${state.calError ? ' (' + esc(state.calError) + ')' : ''}</p>`;
+    const cls = ['cal-d', 'mode-' + mode, inM ? '' : 'out', k === today ? 'cal-today' : '', k === sel ? 'cal-sel' : '', k < today ? 'cal-past' : ''].join(' ');
+    return `<button class="${cls}" data-pick="${mode}" data-day="${k}"><span>${Number(k.slice(8))}</span><i>${n ? (n > 3 ? '•••' : '•'.repeat(n)) : '&nbsp;'}</i></button>`;
+  };
+}
+const viewSeg = (mode) => `<div class="seg"><button data-view="${mode}" data-v="cal" class="${view[mode] === 'cal' ? 'on' : ''}">Календарь</button><button data-view="${mode}" data-v="list" class="${view[mode] === 'list' ? 'on' : ''}">Ближайшие 7 дней</button></div>`;
+const calFoot = () => `${calStale()}<p class="mute">из Google Календаря, ${state.cal?.fetched_at ? esc(calStamp()) : 'нет снимка'}${state.calError ? ' (' + esc(state.calError) + ')' : ''}</p>`;
+const calMissing = () => (!state.cal || state.cal.configured === false ? grouped([], '') : '');
+
+R.meetTab = () => {
+  const miss = calMissing(); if (miss) return miss;
+  if (view.m === 'list') return viewSeg('m') + grouped(window7(7), 'Встреч на 7 дней нет') + '<p class="hint">смены - во вкладке «Смены»</p>';
+  const by = {};
+  for (const e of meetings()) if (!isMarked(e)) (by[evDay(e)] ||= []).push(e);
+  const sel = selDay.m || today0(), all = meetings().filter((e) => evDay(e) === sel);
+  return `${viewSeg('m')}${monthGrid('m', dotCell('m', by))}<div class="day">${esc(dayTitle(sel))}</div>
+    <ul>${visible(all).map((e) => meetLine(e)).join('') || `<li class="mute">${all.length ? 'Все встречи дня отмечены' : 'Встреч нет'}</li>`}</ul>${hiddenNote(all)}
+    <p class="hint">нажми на встречу: отметить, изменить, перенести · смены - во вкладке «Смены»</p>${calFoot()}`;
 };
+
+function archiveBlock() {
+  return state.archived?.length ? `<details style="margin-top:10px"><summary class="mute">Архив напоминаний: ${state.archived.length}</summary><ul>${state.archived.map((a) => `<li class="row"><div class="grow mute">${esc(a.title)}${a.due_at ? ' · ' + esc(dayTitle(dayKey(new Date(a.due_at)))) : ''}</div><button class="ghost small" data-unarchive="${a.id}">Вернуть</button></li>`).join('')}</ul></details>` : '';
+}
+R.remTab = () => {
+  const rem = reminders(), today = today0(), end7 = dayKey(new Date(Date.now() + 6 * 864e5));
+  const open = rem.filter((r) => !r.done && (r.src === 'own' || r.day >= today)); // прошедшие события Google не считаем
+  const later = open.filter((r) => r.day && r.day > end7);
+  const noDue = open.filter((r) => !r.day);
+  const laterBlock = later.length ? `<details class="later"><summary>Позже, после ${esc(dayTitle(end7).replace(/^(Сегодня|Завтра), /, ''))}: ${later.length}</summary><ul>${later.map((r) => remLine(r, true)).join('')}</ul></details>` : '';
+  const noDueBlock = noDue.length ? `<details class="later"><summary>Без срока: ${noDue.length}</summary><ul>${noDue.map((r) => remLine(r)).join('')}</ul></details>` : '';
+  if (view.r === 'list') {
+    const near = open.filter((r) => r.day && r.day <= end7);
+    const by = {};
+    for (const r of near) (by[r.day < today ? today : r.day] ||= []).push(r);
+    const days = Object.keys(by).sort();
+    return `${viewSeg('r')}${pushHint()}${days.map((k) => `<div class="day">${esc(dayTitle(k))}</div><ul>${by[k].map((r) => remLine(r, r.day !== k)).join('')}</ul>`).join('') || '<p class="mute">На 7 дней напоминаний нет</p>'}
+      ${laterBlock}${noDueBlock}${archiveBlock()}`;
+  }
+  const by = {};
+  for (const r of rem) if (r.day && !r.done) (by[r.day] ||= []).push(r);
+  const sel = selDay.r || today, all = rem.filter((r) => r.day === sel);
+  return `${viewSeg('r')}${pushHint()}${monthGrid('r', dotCell('r', by))}<div class="day">${esc(dayTitle(sel))}</div>
+    <ul>${all.map((r) => remLine(r)).join('') || '<li class="mute">Напоминаний нет</li>'}</ul>
+    <p style="margin:10px 0 0"><button style="width:100%" data-act="new-on" data-day="${sel}">＋ Напоминание на ${esc(dayTitle(sel).replace(/^(Сегодня|Завтра), /, ''))}</button></p>
+    ${noDueBlock}${archiveBlock()}
+    <p class="hint">кружок: сделано · строку влево: Завтра / Изменить / В архив</p>`;
+};
+
+// Мои смены: цвет = клиника (адрес после «·» в названии события «Смена · ...»)
+const SH_COLORS = ['#be185d', '#1d4ed8', '#0f766e', '#b45309', '#7c3aed'];
+function clinicColors() {
+  const known = { 'Маркса, 45': SH_COLORS[0], 'Перелёта, 19': SH_COLORS[1] }, out = {};
+  let i = 2;
+  for (const c of [...new Set(shifts().map(shiftClinic))].sort()) out[c] = known[c] || SH_COLORS[i++ % SH_COLORS.length];
+  return out;
+}
+const fmtH = (h) => (Math.round(h * 10) / 10).toString().replace('.', ',');
+R.shiftTab = () => {
+  const miss = calMissing(); if (miss) return miss;
+  const [y, mo] = ymOf(monOff.s), pre = keyOf(y, mo, 1).slice(0, 8), today = today0();
+  const col = clinicColors();
+  const inM = shifts().filter((e) => evDay(e).startsWith(pre)).sort((a, b) => a.start.localeCompare(b.start));
+  const by = {};
+  for (const e of inM) (by[evDay(e)] ||= []).push(e);
+  const days = Object.keys(by);
+  const perClinic = {};
+  for (const k of days) for (const c of new Set(by[k].map(shiftClinic))) perClinic[c] = (perClinic[c] || 0) + 1;
+  const hours = inM.reduce((s, e) => s + shiftHours(e), 0);
+  const leftDays = days.filter((k) => k >= today).length;
+  const sel = selDay.s;
+  const cell = (k, inMonth) => {
+    const s = by[k];
+    const base = ['cal-d', inMonth ? '' : 'out', k === today ? 'cal-today' : '', k < today ? 'cal-past' : ''];
+    if (!s || !inMonth) return `<button class="${base.join(' ')}" data-pick="s" data-day="${k}"><span>${Number(k.slice(8))}</span><i>&nbsp;</i></button>`;
+    const c = col[shiftClinic(s[0])];
+    return `<button class="${base.concat('sh', k === sel ? 'sh-sel' : '').join(' ')}" style="background:${c}" data-pick="s" data-day="${k}"><span>${Number(k.slice(8))}</span><i>${esc(shiftClinic(s[0]).slice(0, 1))}${s.length > 1 ? '×' + s.length : ''}</i></button>`;
+  };
+  const line = (k) => {
+    const s = by[k], c = shiftClinic(s[0]);
+    return `<li class="row${k < today ? ' mute' : ''}${k === sel ? ' sh-on' : ''}"><span class="bar" style="background:${col[c]}"></span><div class="grow"><b>${esc(dayTitle(k).replace(/^(Сегодня|Завтра), /, (x) => x))}</b><div class="mute">${s.map((e) => esc(evTime(e))).join(', ')}</div></div><span class="mute">${esc(c)}</span></li>`;
+  };
+  const sum = (n, l) => `<div><b>${n}</b><span class="mute">${l}</span></div>`;
+  return `<div class="shsum">${sum(days.length, 'смен в месяце')}${sum(fmtH(hours) + ' ч', 'всего')}${sum(leftDays, 'ещё впереди')}</div>
+    <div class="legend">${Object.keys(perClinic).sort().map((c) => `<span style="--c:${col[c]}">${esc(c)}: ${perClinic[c]}</span>`).join('') || '<span class="mute">в этом месяце смен нет</span>'}</div>
+    ${monthGrid('s', cell)}
+    <ul style="margin-top:6px">${days.sort().map(line).join('') || '<li class="mute">Смен нет</li>'}</ul>
+    <p class="hint">смены берутся из Google Календаря: событие «Смена · адрес»</p>${calFoot()}`;
+};
+
 document.addEventListener('click', (ev) => {
   const t = ev.target.closest('[data-act="toggle-marked"]');
   if (t) { showMarked = !showMarked; renderBoard(); return; }
-  const mo = ev.target.closest('[data-cal-mode]');
-  if (mo) { setCalMode(mo.dataset.calMode); return; }
-  const d = ev.target.closest('.cal [data-day]');
-  if (d) { calDay = d.dataset.day; renderBoard(); }
+  const v = ev.target.closest('[data-view]');
+  if (v) { view[v.dataset.view] = v.dataset.v; lsSet('pult.view.' + v.dataset.view, v.dataset.v); renderBoard(); return; }
+  const mn = ev.target.closest('[data-mon]');
+  if (mn) { shiftMonth(mn.dataset.mon, Number(mn.dataset.d)); return; }
+  const d = ev.target.closest('[data-pick]');
+  if (d) {
+    const mode = d.dataset.pick, k = d.dataset.day;
+    selDay[mode] = mode === 's' && selDay.s === k ? null : k;
+    const [y, mo] = ymOf(monOff[mode]);
+    if (k.slice(0, 7) !== keyOf(y, mo, 1).slice(0, 7)) monOff[mode] += k < keyOf(y, mo, 1) ? -1 : 1; // день соседнего месяца: листаем туда
+    renderBoard();
+  }
+  if (ev.target.closest('[data-act="mail-sheet"]')) openSheet(`<div class="row" style="margin-bottom:10px"><b class="grow" style="font-size:18px">Почта</b><button class="ghost small" data-act="sheet-close">Закрыть</button></div>${R.mail()}`);
 });
-function setCalMode(mode) { calMode = mode; lsSet('pult.calMode', mode); renderBoard(); }
-
-// Поручения ассистента (таблица asst_orders, пишет только ассистент)
-let orderDraft = '', orderVia = 'текст';
-const orderForm = () => `<form data-form="order"><p><textarea name="body" rows="3" maxlength="2000" placeholder="Поручение: что сделать, кому, к какому сроку">${esc(orderDraft)}</textarea></p>
-    <p class="row"><button type="button" class="ghost" data-act="mic">🎤 Голосом</button><button>Поручить</button></p><p class="mute" id="micMsg"></p></form>`;
-function inboxList() {
-  const wait = (state.inbox || []).filter((x) => !x.taken_at || (!x.order_id && x.note));
-  return wait.length ? `<ul>${wait.map((x) => `<li><div>${esc(x.body)}</div><div class="mute">${x.via === 'голос' ? '🎤 ' : ''}${hhmm(new Date(x.created_at))} · ${x.taken_at ? linkify(x.note || 'не взято') : 'ждёт разбора ассистентом (заходит раз в час, 7-22)'}</div></li>`).join('')}</ul>` : '';
+function shiftMonth(mode, d) {
+  monOff[mode] = Math.max(-12, Math.min(12, monOff[mode] + d));
+  const [y, mo] = ymOf(monOff[mode]);
+  if (mode !== 's') selDay[mode] = monOff[mode] === 0 ? null : keyOf(y, mo, 1);
+  renderBoard();
 }
-R.orders = (m) => {
-  if (!state.orders) return orderForm() + inboxList() + '<p class="mute">Журнал поручений пока недоступен.</p>';
-  const open = state.orders.filter((o) => !o.closed_at).sort((a, b) => (b.needs_yes - a.needs_yes) || String(a.due_at || '9').localeCompare(String(b.due_at || '9')));
-  const closed = state.orders.filter((o) => o.closed_at);
-  const line = (o) => `<li><div class="row"><div class="grow" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(o.body)}</div>${o.needs_yes ? '<span class="tag red">нужно твоё да</span>' : ''}<button class="ghost small" data-order-done="${o.id}">✓ Сделано</button></div>
-      <div class="mute">${esc(o.route)} · ${esc(o.status)}${o.due_at ? ' · до ' + esc(dayTitle(dayKey(new Date(o.due_at)))) + ' ' + hhmm(new Date(o.due_at)) : ''}</div>${o.result ? `<div class="answer">${linkify(o.result)}</div>` : ''}</li>`;
-  return orderForm() + inboxList() + `<div class="row"><div class="grow"><div class="big">${open.length}</div><div class="mute">открыто</div></div>
-      <div class="grow"><div class="big" style="color:${open.some((o) => o.needs_yes) ? 'var(--red)' : 'inherit'}">${open.filter((o) => o.needs_yes).length}</div><div class="mute">ждут твоего да</div></div></div>
-    <ul style="margin-top:8px">${open.map(line).join('') || '<li class="mute">Открытых поручений нет</li>'}</ul>
-    ${closed.length ? `<details><summary class="mute">Закрыто за 7 дней: ${closed.length}</summary><ul>${closed.map((o) => `<li><div>${esc(o.body)}</div><div class="mute">${esc(o.status)}</div>${o.result ? `<div class="answer">${linkify(o.result)}</div>` : ''}</li>`).join('')}</ul></details>` : ''}`;
-};
-
-R.stub = R.note = (m) => `<p class="mute">${esc((m.config || {}).text || '')}</p>`;
 
 // ---------- вкладки ----------
-const TABS = [['today', 'Сегодня', '🏠'], ['cal', 'Календарь', '📅'], ['orders', 'Поручения', '✉️'], ['mail', 'Почта', '📬']];
-const tabOf = (kind) => (kind === 'calendar' ? 'cal' : kind === 'orders' ? 'orders' : kind === 'mail' ? 'mail' : 'today');
-let tab = TABS.some((t) => t[0] === lsGet('pult.tab')) ? lsGet('pult.tab') : 'today';
+// 0.8: у каждого своя вкладка. Почта - цифра на «Сегодня» (нажал - подробности шторкой).
+const TABS = [['today', 'Сегодня', '🏠'], ['meet', 'Встречи', '📅'], ['rem', 'Напоминания', '🔔'], ['shift', 'Смены', '🩺'], ['orders', 'Поручения', '✉️']];
+const FIXED = { meet: ['Встречи', 'meetTab'], rem: ['Напоминания', 'remTab'], shift: ['Мои смены', 'shiftTab'] };
+// Панели из реестра: на «Сегодня» - сама «Сегодня» и свои панели (заметка, события по слову); на «Поручениях» - поручения.
+// Старые панели (список напоминаний, встречи на 7 дней, смены на 7 дней, календарь, почта, клиники) заменены вкладками.
+const tabOf = (m) => (m.kind === 'orders' ? 'orders' : m.kind === 'today' || m.kind === 'note' || (m.kind === 'events' && m.config?.match) ? 'today' : null);
+const oldTab = lsGet('pult.tab');
+let tab = TABS.some((t) => t[0] === oldTab) ? oldTab : oldTab === 'cal' ? 'meet' : 'today';
 function setTab(t) { tab = t; lsSet('pult.tab', t); closeSheet(); renderBoard(); window.scrollTo(0, 0); }
 
 function renderBoard() {
   const all = (state.layout?.modules || []).filter((m) => m.enabled !== false);
-  const mods = all.filter((m) => tabOf(m.kind) === tab);
+  const mods = FIXED[tab] ? [{ key: tab, title: FIXED[tab][0], kind: FIXED[tab][1] }] : all.filter((m) => tabOf(m) === tab);
   $('board').innerHTML = mods.map((m) => {
     let body;
     try { body = (R[m.kind] || (() => `<p class="mute">Вид панели «${esc(m.kind)}» эта версия пульта не знает.</p>`))(m); }
     catch (e) { body = `<div class="banner red">Панель не отрисовалась: ${esc(e.message)}</div>`; }
-    return `<div class="card" data-mod="${esc(m.key)}"><h2>${esc(m.title)}</h2>${body}</div>`;
+    return R[m.kind]?.bare ? body : `<div class="card" data-mod="${esc(m.key)}"><h2>${esc(m.title)}</h2>${body}</div>`;
   }).join('') || `<div class="card mute">${all.length ? 'На этой вкладке панелей нет. Включить: «Панели».' : 'Все панели скрыты. Нажми «Панели».'}</div>`;
   if (tab === 'today' && pkOK && !lsGet('pult.pk')) $('board').insertAdjacentHTML('afterbegin', `<div class="card"><h2>Вход по Face ID</h2>
     <p class="mute">Если пульт когда-нибудь попросит войти, хватит взгляда вместо пароля.</p>
@@ -367,7 +468,6 @@ document.addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-tab], [data-tab-go]');
   if (b) setTab(b.dataset.tab || b.dataset.tabGo);
 });
-
 // ---------- шторка снизу: правка напоминания, встреча ----------
 function openSheet(html) {
   $('sheet').innerHTML = `<div class="dim" data-act="sheet-close"></div><div class="sheet-box" role="dialog"><div class="grab"></div>${html}</div>`;
@@ -400,7 +500,7 @@ function taskSheet(t, preset = {}) {
     <input type="hidden" name="priority" value="${t ? t.priority : 2}">
     <p><textarea name="note" rows="2" maxlength="2000" placeholder="Заметка">${esc(t?.note || '')}</textarea></p>
     <div class="btns">${t ? `<button type="button" class="ghost danger" data-act="archive" data-id="${t.id}">В архив</button>` : ''}<button>Сохранить</button></div>
-    ${t ? '<p class="mute">В архив, а не удалить: вернуть можно в «Календарь → Напоминания → Архив».</p>' : ''}</form>`);
+    ${t ? '<p class="mute">В архив, а не удалить: вернуть можно во вкладке «Напоминания» → «Архив».</p>' : ''}</form>`);
 }
 document.addEventListener('click', (ev) => {
   const f = ev.target.closest('[data-form="task-edit"]');
@@ -556,11 +656,11 @@ document.addEventListener('submit', (ev) => {
 });
 
 // ---------- смахивания ----------
-// Строка напоминания влево: Завтра / Изменить / В архив. Календарь влево-вправо: Встречи <-> Напоминания.
+// Строка напоминания влево: Завтра / Изменить / В архив. Сетку месяца влево-вправо: следующий / прошлый месяц.
 let sw = null, wasSwipe = false;
 const closeSwipes = (except) => document.querySelectorAll('.swipe.open').forEach((x) => { if (x !== except) x.classList.remove('open'); });
 document.addEventListener('touchstart', (ev) => {
-  const row = ev.target.closest('.swipe'), cal = ev.target.closest('[data-swipe-cal]');
+  const row = ev.target.closest('.swipe'), cal = ev.target.closest('[data-swipe-mon]');
   if (!row && !cal) { closeSwipes(); return; }
   const p = ev.touches[0];
   sw = { row, cal, x: p.clientX, y: p.clientY, dx: 0, lock: null };
@@ -588,7 +688,7 @@ document.addEventListener('touchend', () => {
     closeSwipes(s.row);
     s.row.classList.toggle('open', open);
   } else if (s.cal && Math.abs(s.dx) > 60) {
-    setCalMode(s.dx < 0 ? 'r' : 'm');
+    shiftMonth(s.cal.dataset.swipeMon, s.dx < 0 ? 1 : -1);
   }
 });
 
