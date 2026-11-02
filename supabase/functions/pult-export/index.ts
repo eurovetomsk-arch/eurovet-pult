@@ -164,24 +164,31 @@ async function iphoneMirror(raw: string, src: string) {
     rows.push({ title, due_at: phoneDate(d) });
     if (d && samples.length < 12) samples.push(d.slice(0, 40));
   }
-  const { data: cur, error } = await admin.from("pult_tasks").select("id,title,due_at,owner_id")
+  const { data: cur, error } = await admin.from("pult_tasks").select("id,title,due_at,owner_id,phone_sig")
     .eq("phone_src", src).is("done_at", null).is("archived_at", null).limit(2000);
   if (error) return { added: 0, moved: 0, closed: 0, error: error.message, samples };
   const left = [...(cur ?? [])];
   const norm = (x: string | null) => (x ? new Date(x).toISOString() : null);
+  // Поправка времени для одного напоминания: у некоторых на iPhone внутри чужой часовой пояс,
+  // и Команда отдаёт не то время, что на экране. phone_sig у зеркала свободен: «shift:-60» = минус 60 минут.
+  // Поправку ставят вручную в базе один раз; дальше она держится и для повторяющихся.
+  const shiftOf = (sig: string | null) => { const m = /^shift:(-?\d{1,5})$/.exec(sig ?? ""); return m ? +m[1] : 0; };
+  const fix = (due: string | null, sig: string | null) => (due && shiftOf(sig) ? new Date(Date.parse(due) + shiftOf(sig) * 60e3).toISOString() : due);
   // Закрытые в Ассистенте не возвращаем, пока на iPhone тот же срок (у повторяющихся срок потом сдвинется)
-  const { data: shut } = await admin.from("pult_tasks").select("title,due_at").eq("phone_src", src)
+  const { data: shut } = await admin.from("pult_tasks").select("title,due_at,phone_sig").eq("phone_src", src)
     .or("done_at.not.is.null,archived_at.not.is.null").gt("updated_at", new Date(Date.now() - 90 * 864e5).toISOString()).limit(2000);
-  const closedKeys = new Set((shut ?? []).map((t) => `${t.title}|${norm(t.due_at)}`));
+  // ключ по сроку, как его шлёт iPhone (без поправки)
+  const closedKeys = new Set((shut ?? []).map((t) => `${t.title}|${t.due_at ? new Date(Date.parse(t.due_at) - shiftOf(t.phone_sig) * 60e3).toISOString() : null}`));
   let added = 0, moved = 0;
   const fresh: typeof rows = [];
   for (const r of rows) {
     // сначала точное совпадение (название и срок), потом по названию: у повторяющихся срок сдвигается
-    let k = left.findIndex((t) => t.title === r.title && norm(t.due_at) === r.due_at);
+    let k = left.findIndex((t) => t.title === r.title && norm(t.due_at) === fix(r.due_at, t.phone_sig));
     if (k < 0) k = left.findIndex((t) => t.title === r.title);
     if (k < 0) { if (!closedKeys.has(`${r.title}|${r.due_at}`)) fresh.push(r); continue; }
     const t = left.splice(k, 1)[0];
-    if (norm(t.due_at) !== r.due_at) { await admin.from("pult_tasks").update({ due_at: r.due_at }).eq("id", t.id); moved++; }
+    const want = fix(r.due_at, t.phone_sig);
+    if (norm(t.due_at) !== want) { await admin.from("pult_tasks").update({ due_at: want }).eq("id", t.id); moved++; }
   }
   if (fresh.length) {
     const { data: own } = await admin.from("pult_tasks").select("owner_id").order("id", { ascending: false }).limit(1);
