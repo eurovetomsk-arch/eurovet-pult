@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.8.0',
+  version: '0.8.1',
   tz: 'Asia/Omsk',
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
   nightTo: 7.5,
@@ -153,8 +153,13 @@ const isGoogleLink = (u) => typeof u === 'string' && u.startsWith('https://www.g
 // Единый список напоминаний: свои (pult_tasks) + из Google Календаря (только чтение, до переноса).
 // Одно и то же в двух местах (то же название, тот же день) показываем один раз: своё важнее.
 const normT = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+// Встреча, записанная на iPhone в «Напоминания» (название начинается со «Встреча», «Созвон», «Zoom»...),
+// показывается во «Встречах», а не в «Напоминаниях». В базе ничего не меняется.
+const MEET_RE = /^\s*(встреч|созвон|zoom|зум|совещани|планёрк|планерк|переговор)/iu;
+const ownRows = () => state.tasks.map((t) => ({ src: 'own', id: t.id, title: t.title, due: t.due_at, day: t.due_at ? dayKey(new Date(t.due_at)) : null, done: !!t.done_at, t }));
+const ownMeet = () => ownRows().filter((r) => MEET_RE.test(r.title) && r.day);
 function reminders() {
-  const own = state.tasks.map((t) => ({ src: 'own', id: t.id, title: t.title, due: t.due_at, day: t.due_at ? dayKey(new Date(t.due_at)) : null, done: !!t.done_at, t }));
+  const own = ownRows().filter((r) => !(MEET_RE.test(r.title) && r.day));
   const seen = new Set(own.map((r) => normT(r.title) + '|' + r.day));
   const g = calEvents().filter(isRemEv).map((e) => ({ src: 'google', key: evKey(e), title: e.title, due: e.start, day: evDay(e), done: isMarked(e), allDay: e.all_day, e }))
     .filter((x) => !seen.has(normT(x.title) + '|' + x.day));
@@ -221,7 +226,8 @@ function shiftLineToday() {
 R.today = (m) => {
   const today = today0(), tom = tomorrow0();
   const mt = meetings().filter((e) => evDay(e) === today);
-  const left = mt.filter((e) => !isMarked(e));
+  const omT = ownMeet().filter((r) => r.day === today), omTom = ownMeet().filter((r) => r.day === tom && !r.done);
+  const left = mt.filter((e) => !isMarked(e)).concat(omT.filter((r) => !r.done));
   const rem = reminders();
   const remNow = rem.filter((r) => !r.done && r.day && (r.day === today || (r.src === 'own' && r.day < today))); // прошедшие события Google не тащим в «сегодня»
   const remDoneToday = rem.filter((r) => r.done && r.src === 'own' && r.t.done_at && dayKey(new Date(r.t.done_at)) === today);
@@ -239,12 +245,12 @@ R.today = (m) => {
       ${tile(ord.length, yes ? `ждут да: ${yes}` : 'поручений', 'data-tab-go="orders"', yes)}
       ${tile(state.mail ? state.mail.reply_count : '-', 'писем ответить', 'data-act="mail-sheet"', state.mail?.reply_count)}</div>
     ${shiftLineToday()}${calWarn}
-    <div class="card"><h2>Встречи сегодня</h2><ul>${left.map((e) => meetLine(e)).join('') || `<li class="mute">${mt.length ? 'Все встречи дня отмечены' : 'Встреч нет'}</li>`}</ul>
+    <div class="card"><h2>Встречи сегодня</h2><ul>${left.map((e) => (e.src === 'own' ? remLine(e) : meetLine(e))).join('') || `<li class="mute">${mt.length + omT.length ? 'Все встречи дня отмечены' : 'Встреч нет'}</li>`}${omT.filter((r) => r.done).map((r) => remLine(r)).join('')}</ul>
     ${past.length ? `<details class="banner org"><summary>Отметь прошедшие встречи: ${past.length}</summary><ul>${past.map((e) => meetLine(e, true)).join('')}</ul></details>` : ''}</div>
     <div class="card"><h2>Напоминания</h2>${pushHint()}<ul>${remNow.map((r) => remLine(r, r.day !== today)).join('') || '<li class="mute">На сегодня напоминаний нет</li>'}${remDoneToday.map((r) => remLine(r)).join('')}</ul>
     ${noDue.length ? `<details><summary class="mute">Без срока: ${noDue.length}</summary><ul>${noDue.map((r) => remLine(r)).join('')}</ul></details>` : ''}
     <form data-form="quick" class="row" style="margin-top:8px"><input name="title" placeholder="Новое напоминание" maxlength="300" class="grow" autocomplete="off"><button aria-label="Добавить">＋</button></form></div>
-    <div class="card"><h2>Завтра, ${esc(dayTitle(tom).replace(/^Завтра, /, ''))}</h2><ul>${tomM.map((e) => meetLine(e)).join('')}${tomR.map((r) => remLine(r)).join('') || (tomM.length ? '' : '<li class="mute">Пусто</li>')}</ul></div>`;
+    <div class="card"><h2>Завтра, ${esc(dayTitle(tom).replace(/^Завтра, /, ''))}</h2><ul>${tomM.map((e) => meetLine(e)).join('')}${omTom.map((r) => remLine(r)).join('')}${tomR.map((r) => remLine(r)).join('') || (tomM.length + omTom.length ? '' : '<li class="mute">Пусто</li>')}</ul></div>`;
 };
 R.today.bare = true; // сама рисует свои карточки
 
@@ -335,12 +341,18 @@ const calMissing = () => (!state.cal || state.cal.configured === false ? grouped
 
 R.meetTab = () => {
   const miss = calMissing(); if (miss) return miss;
-  if (view.m === 'list') return viewSeg('m') + grouped(window7(7), 'Встреч на 7 дней нет') + '<p class="hint">смены - во вкладке «Смены»</p>';
+  if (view.m === 'list') {
+    const end7 = dayKey(new Date(Date.now() + 6 * 864e5)), om = ownMeet().filter((r) => !r.done && r.day >= today0() && r.day <= end7);
+    return viewSeg('m') + grouped(window7(7), 'Встреч на 7 дней нет')
+      + (om.length ? `<h3>Из «Напоминаний» iPhone</h3><ul>${om.map((r) => remLine(r, true)).join('')}</ul>` : '') + '<p class="hint">смены - во вкладке «Смены»</p>';
+  }
   const by = {};
   for (const e of meetings()) if (!isMarked(e)) (by[evDay(e)] ||= []).push(e);
-  const sel = selDay.m || today0(), all = meetings().filter((e) => evDay(e) === sel);
+  for (const r of ownMeet()) if (!r.done) (by[r.day] ||= []).push(r);
+  const sel = selDay.m || today0(), all = meetings().filter((e) => evDay(e) === sel), om = ownMeet().filter((r) => r.day === sel);
   return `${viewSeg('m')}${monthGrid('m', dotCell('m', by))}<div class="day">${esc(dayTitle(sel))}</div>
-    <ul>${visible(all).map((e) => meetLine(e)).join('') || `<li class="mute">${all.length ? 'Все встречи дня отмечены' : 'Встреч нет'}</li>`}</ul>${hiddenNote(all)}
+    <ul>${visible(all).map((e) => meetLine(e)).join('')}${om.map((r) => remLine(r)).join('') || (visible(all).length ? '' : `<li class="mute">${all.length ? 'Все встречи дня отмечены' : 'Встреч нет'}</li>`)}</ul>${hiddenNote(all)}
+    ${om.length ? '<p class="hint">с кружком: встреча из «Напоминаний» iPhone, в Google Календаре её нет</p>' : ''}
     <p class="hint">нажми на встречу: отметить, изменить, перенести · смены - во вкладке «Смены»</p>${calFoot()}`;
 };
 
