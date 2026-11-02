@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.8.3',
+  version: '0.9.0',
   tz: 'Asia/Omsk',
   gmail: 'eurovet.omsk@gmail.com', // ящик, где ярлыки «Статус/…» (снимок почты)
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
@@ -70,13 +70,13 @@ const cache = {
   set(v) { try { localStorage.setItem('pult.cache', JSON.stringify(v)); } catch { /* нет места или приватный режим */ } },
 };
 
-let state = { layout: null, versions: [], tasks: [], archived: [], mail: null, settings: null, cal: null, calError: null, orders: null, inbox: null, marks: {}, offline: false };
+let state = { layout: null, versions: [], tasks: [], archived: [], mail: null, settings: null, cal: null, calError: null, orders: null, inbox: null, marks: {}, yes: [], yesError: null, offline: false };
 
 // ---------- загрузка ----------
 async function load() {
   const old = cache.get();
   const since = new Date(Date.now() - 2 * 864e5).toISOString();
-  const [lay, tasks, mail, set, cal, orders, inbox, marks, arch] = await Promise.all([
+  const [lay, tasks, mail, set, cal, orders, inbox, marks, arch, yes] = await Promise.all([
     sb.from('pult_layout').select('version,created_at,note,modules').order('version', { ascending: false }).limit(20),
     sb.from('pult_tasks').select('*').is('archived_at', null).or(`done_at.is.null,done_at.gt.${since}`).order('due_at', { ascending: true, nullsFirst: false }),
     sb.from('pult_mail_snapshot').select('*').order('taken_at', { ascending: false }).limit(1),
@@ -89,6 +89,7 @@ async function load() {
       .or(`taken_at.is.null,created_at.gt.${since}`).order('created_at', { ascending: false }).limit(50),
     sb.from('pult_event_marks').select('event_key,mark').gte('start_at', new Date(Date.now() - 10 * 864e5).toISOString()),
     sb.from('pult_tasks').select('id,title,due_at,archived_at').not('archived_at', 'is', null).order('archived_at', { ascending: false }).limit(30),
+    sb.rpc('pult_yes_list'), // 0.9: вопросы «нужно-да» без ответа Михаила (только владелец)
   ]);
   const netFail = [lay, tasks, mail].some((r) => r.error && /fetch|network/i.test(r.error.message || ''));
   state.offline = netFail;
@@ -106,6 +107,8 @@ async function load() {
   state.orders = orders.error ? null : orders.data; // таблицу ведёт ассистент; нет таблицы - панель покажет заглушку
   state.inbox = inbox.error ? null : inbox.data;
   state.archived = arch.error ? [] : arch.data;
+  state.yesError = yes.error ? (yes.error.message || 'не загрузилось') : null;
+  if (!yes.error) state.yes = yes.data || [];
   state.marks = marks.error ? (old.state?.marks || {}) : Object.fromEntries(marks.data.map((x) => [x.event_key, x.mark]));
   // Снимок агента читаем прямо из базы (RLS: только владелец). Нет снимка - запасной путь через функцию pult-calendar.
   let c = cal;
@@ -241,7 +244,7 @@ R.today = (m) => {
   const calWarn = !state.cal ? `<div class="banner org">Календарь ещё не загружен${state.calError ? ': ' + esc(state.calError) : ''}.</div>`
     : state.calError ? `<div class="banner org">Встречи: ${esc(calStamp())}, ${esc(state.calError)}</div>` : calStale();
   const tile = (n, l, go, red) => `<div class="tile tap" ${go}><div class="big"${red ? ' style="color:var(--red)"' : ''}>${n}</div><div class="mute">${l}</div></div>`;
-  return `<div class="tiles">${tile(left.length, left.length < mt.length ? 'встреч осталось' : 'встреч сегодня', 'data-tab-go="meet"')}
+  return `${yesLine()}<div class="tiles">${tile(left.length, left.length < mt.length ? 'встреч осталось' : 'встреч сегодня', 'data-tab-go="meet"')}
       ${tile(remNow.length, 'напоми­наний', 'data-tab-go="rem"', remNow.length)}
       ${tile(state.mail ? state.mail.reply_count : '-', 'писем ответить', 'data-act="mail-sheet"', state.mail?.reply_count)}</div>
     ${shiftLineToday()}${calWarn}
@@ -358,6 +361,47 @@ R.meetTab = () => {
     <p class="hint">нажми на встречу: отметить, изменить, перенести · смены - во вкладке «Смены»</p>${calFoot()}`;
 };
 
+// ---------- 0.9: «Ждут твоего да» (ТЗ 1006) ----------
+// Вопросы из архива с тегом «нужно-да» без ответа Михаила. Кнопка пишет ответ в архив сама (функция pult_yes_answer).
+const yesOpen = () => (state.yes || []).filter((q) => !q.snooze_until || new Date(q.snooze_until) <= new Date());
+const yesLater = () => (state.yes || []).filter((q) => q.snooze_until && new Date(q.snooze_until) > new Date());
+const yesAge = (q) => { const h = (Date.now() - new Date(q.created_at)) / 36e5; return h < 1 ? 'меньше часа' : h < 48 ? Math.floor(h) + ' ч' : Math.floor(h / 24) + ' дн'; };
+const yesTitle = (q) => String(q.title || '').replace(/^\s*->\s*[^:]{1,40}:\s*/, '');
+function yesLine() {
+  const n = yesOpen().length;
+  if (!n) return '';
+  const old = yesOpen().filter((q) => Date.now() - new Date(q.created_at) > 12 * 36e5).length;
+  return `<div class="shline tap" data-tab-go="yes" style="border-color:var(--acc)"><span>✅</span><span class="grow">Ждут твоего да: <b>${n}</b>${old ? ` <span class="tag red">дольше 12 ч: ${old}</span>` : ''}</span><span class="chev">›</span></div>`;
+}
+function yesCard(q, later = false) {
+  return `<div class="card" data-yes="${q.id}">
+    <div class="mute">от: <b>${esc(q.from_place)}</b> · письмо ${q.id} · ждёт ${yesAge(q)}${later ? ' · отложено до ' + esc(hhmm(new Date(q.snooze_until))) : ''}</div>
+    <div style="font-weight:600;margin:4px 0">${esc(yesTitle(q))}</div>
+    <div class="rt mute" style="font-size:14px">${esc(String(q.content || '').slice(0, 400))}</div>
+    <details><summary class="mute" style="margin:6px 0">Читать целиком</summary><div class="answer">${linkify(q.content || '')}</div></details>
+    <textarea data-yes-c="${q.id}" rows="2" maxlength="1000" placeholder="Комментарий (не обязательно)" style="margin:6px 0"></textarea>
+    <div class="btns"><button data-yes-a="да" data-id="${q.id}" style="background:var(--ok)">Да</button><button data-yes-a="нет" data-id="${q.id}" style="background:var(--red)">Нет</button><button class="ghost" data-yes-a="позже" data-id="${q.id}">Позже</button></div></div>`;
+}
+R.yesTab = () => {
+  const open = yesOpen(), later = yesLater();
+  const err = state.yesError ? `<div class="banner org">Вопросы не загрузились: ${esc(state.yesError)}. Показаны сохранённые.</div>` : '';
+  return `${err}<div class="card"><h2>Ждут твоего да: ${open.length}</h2><p class="mute">Вопросы от всех мест, сверху самые старые. «Да» и «Нет» сразу уходят месту письмом от тебя. «Позже» прячет вопрос на 12 часов.</p></div>
+    ${open.map((q) => yesCard(q)).join('') || '<div class="card mute">Сейчас вопросов к тебе нет.</div>'}
+    ${later.length ? `<details class="later"><summary>Отложено: ${later.length}</summary>${later.map((q) => yesCard(q, true)).join('')}</details>` : ''}`;
+};
+R.yesTab.bare = true;
+document.addEventListener('click', async (ev) => {
+  const b = ev.target.closest('[data-yes-a]');
+  if (!b) return;
+  const id = Number(b.dataset.id), a = b.dataset.yesA, q = (state.yes || []).find((x) => x.id === id);
+  const c = document.querySelector(`[data-yes-c="${id}"]`)?.value.trim() || '';
+  if (a !== 'позже' && !confirm(`Ответить «${a === 'да' ? 'Да' : 'Нет'}» на письмо ${id}${q ? ' от ' + q.from_place : ''}?${c ? '\nКомментарий: ' + c : ''}`)) return;
+  b.closest('.btns').querySelectorAll('button').forEach((x) => { x.disabled = true; });
+  const { error } = await sb.rpc('pult_yes_answer', { p_id: id, p_decision: a, p_comment: c || null });
+  if (error) { alert('Не записалось: ' + error.message); b.closest('.btns').querySelectorAll('button').forEach((x) => { x.disabled = false; }); return; }
+  await refresh();
+});
+
 function archiveBlock() {
   return state.archived?.length ? `<details style="margin-top:10px"><summary class="mute">Архив напоминаний: ${state.archived.length}</summary><ul>${state.archived.map((a) => `<li class="row"><div class="grow mute">${esc(a.title)}${a.due_at ? ' · ' + esc(dayTitle(dayKey(new Date(a.due_at)))) : ''}</div><button class="ghost small" data-unarchive="${a.id}">Вернуть</button></li>`).join('')}</ul></details>` : '';
 }
@@ -455,13 +499,16 @@ function shiftMonth(mode, d) {
 // 0.8: у каждого своя вкладка. Почта - цифра на «Сегодня» (нажал - подробности шторкой).
 // 0.8.3: вкладка «Поручения» скрыта по слову Михаила 02.11 (за 3 дня 2 поручения, ответ 40-50 мин).
 // Код R.orders и таблицы pult_inbox/asst_orders остаются: вернуть - добавить строку ['orders', 'Поручения', '✉️'].
-const TABS = [['today', 'Сегодня', '🏠'], ['meet', 'Встречи', '📅'], ['rem', 'Напоминания', '🔔'], ['shift', 'Смены', '🩺']];
-const FIXED = { meet: ['Встречи', 'meetTab'], rem: ['Напоминания', 'remTab'], shift: ['Мои смены', 'shiftTab'] };
+// 0.9: вкладка «Да» - вопросы к Михаилу от всех мест (ТЗ 1006).
+const TABS = [['today', 'Сегодня', '🏠'], ['yes', 'Да', '✅'], ['meet', 'Встречи', '📅'], ['rem', 'Напоминания', '🔔'], ['shift', 'Смены', '🩺']];
+const FIXED = { yes: ['Ждут твоего да', 'yesTab'], meet: ['Встречи', 'meetTab'], rem: ['Напоминания', 'remTab'], shift: ['Мои смены', 'shiftTab'] };
 // Панели из реестра: на «Сегодня» - сама «Сегодня» и свои панели (заметка, события по слову); на «Поручениях» - поручения.
 // Старые панели (список напоминаний, встречи на 7 дней, смены на 7 дней, календарь, почта, клиники) заменены вкладками.
 const tabOf = (m) => (m.kind === 'orders' ? (TABS.some((t) => t[0] === 'orders') ? 'orders' : null) : m.kind === 'today' || m.kind === 'note' || (m.kind === 'events' && m.config?.match) ? 'today' : null);
 const oldTab = lsGet('pult.tab');
-let tab = TABS.some((t) => t[0] === oldTab) ? oldTab : oldTab === 'cal' ? 'meet' : 'today';
+let tab = location.hash === '#yes' ? 'yes' : TABS.some((t) => t[0] === oldTab) ? oldTab : oldTab === 'cal' ? 'meet' : 'today';
+// уведомление «Ждут твоего да» при открытом пульте: служебный файл просит открыть вкладку
+if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', (e) => { if (e.data?.tab === 'yes') { setTab('yes'); refresh(true); } });
 function setTab(t) { tab = t; lsSet('pult.tab', t); closeSheet(); renderBoard(); window.scrollTo(0, 0); }
 
 function renderBoard() {
@@ -476,8 +523,9 @@ function renderBoard() {
   if (tab === 'today' && pkOK && !lsGet('pult.pk')) $('board').insertAdjacentHTML('afterbegin', `<div class="card"><h2>Вход по Face ID</h2>
     <p class="mute">Если пульт когда-нибудь попросит войти, хватит взгляда вместо пароля.</p>
     <p class="row"><button data-act="pk-on">Включить Face ID</button><button class="ghost" data-act="pk-later">Не сейчас</button></p></div>`);
-  const yes = (state.orders || []).filter((o) => !o.closed_at && o.needs_yes).length;
-  $('tabs').innerHTML = TABS.map(([k, l, i]) => `<button data-tab="${k}" class="${k === tab ? 'on' : ''}"><b>${i}</b>${l}${k === 'orders' && yes ? `<span class="badge">${yes}</span>` : ''}</button>`).join('');
+  const yes = (state.orders || []).filter((o) => !o.closed_at && o.needs_yes).length, nYes = yesOpen().length;
+  const badge = (k) => (k === 'orders' && yes ? yes : k === 'yes' && nYes ? nYes : 0);
+  $('tabs').innerHTML = TABS.map(([k, l, i]) => `<button data-tab="${k}" class="${k === tab ? 'on' : ''}"><b>${i}</b>${l}${badge(k) ? `<span class="badge">${badge(k)}</span>` : ''}</button>`).join('');
   $('offline').classList.toggle('hidden', !state.offline);
 }
 document.addEventListener('click', (ev) => {
@@ -941,7 +989,7 @@ $('btnSignup').onclick = async () => {
 
 async function refresh(bg = false) {
   try { await load(); } catch (e) { state.offline = true; console.error(e); }
-  if (bg && (rec || document.activeElement === orderTA())) return; // фоновое обновление во время диктовки или ввод: не стираем поле перерисовкой
+  if (bg && (rec || document.activeElement === orderTA() || document.activeElement?.matches?.('[data-yes-c]'))) return; // фоновое обновление во время диктовки или ввод: не стираем поле перерисовкой
   renderBoard();
 }
 

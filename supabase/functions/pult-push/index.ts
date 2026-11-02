@@ -3,6 +3,7 @@
 // subscribe (владелец)  - сохранить подписку телефона
 // test      (владелец)  - пробное уведомление
 // tick      (таймер pg_cron, заголовок x-pult-cron) - разослать наступившие напоминания
+//           и (0.9, ТЗ 1006) вопросы «нужно-да», которые ждут ответа Михаила дольше 12 ч: днём 08-21 по Омску, не чаще раза в сутки на вопрос
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import webpush from "npm:web-push@3.6.7";
 
@@ -38,7 +39,7 @@ async function vapid() {
   return pub!;
 }
 
-async function sendAll(payload: { title: string; body: string }) {
+async function sendAll(payload: { title: string; body: string; tag?: string; url?: string }) {
   await vapid();
   const { data: subs } = await admin.from("pult_push_subs").select("endpoint,p256dh,auth");
   let sent = 0, gone = 0;
@@ -53,6 +54,22 @@ async function sendAll(payload: { title: string; body: string }) {
     }
   }
   return { sent, gone, subs: subs?.length ?? 0 };
+}
+
+// Вопросы «нужно-да» дольше 12 ч без ответа: одно уведомление на все, днём по Омску (UTC+6)
+async function yesTick() {
+  const h = (new Date().getUTCHours() + 6) % 24;
+  if (h < 8 || h >= 21) return { night: true };
+  const { data: q, error } = await admin.rpc("pult_yes_overdue");
+  if (error) { await admin.from("pult_log").insert({ actor: "push", action: "yes_error", detail: { msg: error.message.slice(0, 200) } }); return { error: true }; }
+  if (!q?.length) return { overdue: 0 };
+  const body = q.slice(0, 6).map((x: { from_place: string; title: string }) => "• " + x.from_place + ": " + String(x.title).replace(/^\s*->\s*[^:]+:\s*/, "").slice(0, 80)).join("\n")
+    + (q.length > 6 ? `\n…и ещё ${q.length - 6}` : "");
+  const r = await sendAll({ title: `Ждут твоего да: ${q.length}`, body, tag: "pult-yes", url: "./#yes" });
+  if (r.sent === 0) return { overdue: q.length, ...r }; // нет подписок: не пишем в журнал каждые 5 минут
+  await admin.rpc("pult_yes_pushed", { p_ids: q.map((x: { id: number }) => x.id) });
+  await admin.from("pult_log").insert({ actor: "push", action: "yes_tick", detail: { overdue: q.length, ids: q.map((x: { id: number }) => x.id), ...r } });
+  return { overdue: q.length, ...r };
 }
 
 async function isOwner(req: Request) {
@@ -77,12 +94,16 @@ Deno.serve(async (req) => {
       .lte("due_at", new Date().toISOString())
       .gte("due_at", new Date(Date.now() - 864e5).toISOString())
       .order("due_at").limit(20);
-    if (!due?.length) return json({ due: 0 });
-    const body = due.map((t) => "• " + t.title).join("\n").slice(0, 900);
-    const r = await sendAll({ title: due.length === 1 ? "Напоминание" : `Напоминаний: ${due.length}`, body });
-    if (r.sent > 0) await admin.from("pult_tasks").update({ reminded_at: new Date().toISOString() }).in("id", due.map((t) => t.id));
-    await admin.from("pult_log").insert({ actor: "push", action: "tick", detail: { due: due.length, ...r } });
-    return json({ due: due.length, ...r });
+    const out: Record<string, unknown> = { due: due?.length ?? 0 };
+    if (due?.length) {
+      const body = due.map((t) => "• " + t.title).join("\n").slice(0, 900);
+      const r = await sendAll({ title: due.length === 1 ? "Напоминание" : `Напоминаний: ${due.length}`, body });
+      if (r.sent > 0) await admin.from("pult_tasks").update({ reminded_at: new Date().toISOString() }).in("id", due.map((t) => t.id));
+      await admin.from("pult_log").insert({ actor: "push", action: "tick", detail: { due: due.length, ...r } });
+      Object.assign(out, r);
+    }
+    out.yes = await yesTick();
+    return json(out);
   }
 
   const sb = await isOwner(req);
