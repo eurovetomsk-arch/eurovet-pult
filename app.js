@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.9.2',
+  version: '0.9.3',
   tz: 'Asia/Omsk',
   gmail: 'eurovet.omsk@gmail.com', // ящик, где ярлыки «Статус/…» (снимок почты)
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
@@ -163,7 +163,12 @@ const normT = (s) => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '
 // показывается во «Встречах», а не в «Напоминаниях». В базе ничего не меняется.
 const MEET_RE = /^\s*(встреч|созвон|zoom|зум|совещани|планёрк|планерк|переговор)/iu;
 const ownRows = () => state.tasks.map((t) => ({ src: 'own', id: t.id, title: t.title, due: t.due_at, day: t.due_at ? dayKey(new Date(t.due_at)) : null, done: !!t.done_at, t }));
-const ownMeet = () => ownRows().filter((r) => MEET_RE.test(r.title) && r.day);
+// 0.9.3: встречи из «Не забыть» агент календаря копирует в Google (слово Михаила 03.11).
+// Когда копия уже в Google (то же название и день), показываем её, а свою строку прячем, чтобы не было дубля.
+const ownMeet = () => {
+  const g = new Set(meetings().map((e) => normT(e.title) + '|' + evDay(e)));
+  return ownRows().filter((r) => MEET_RE.test(r.title) && r.day && !g.has(normT(r.title) + '|' + r.day));
+};
 function reminders() {
   const own = ownRows().filter((r) => !(MEET_RE.test(r.title) && r.day));
   const seen = new Set(own.map((r) => normT(r.title) + '|' + r.day));
