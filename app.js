@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.9.3',
+  version: '0.9.4',
   tz: 'Asia/Omsk',
   gmail: 'eurovet.omsk@gmail.com', // ящик, где ярлыки «Статус/…» (снимок почты)
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
@@ -72,16 +72,15 @@ const cache = {
   set(v) { try { localStorage.setItem('pult.cache', JSON.stringify(v)); } catch { /* нет места или приватный режим */ } },
 };
 
-let state = { layout: null, versions: [], tasks: [], archived: [], mail: null, settings: null, cal: null, calError: null, orders: null, inbox: null, marks: {}, yes: [], yesError: null, offline: false };
+let state = { layout: null, versions: [], tasks: [], archived: [], settings: null, cal: null, calError: null, orders: null, inbox: null, marks: {}, yes: [], yesError: null, offline: false };
 
 // ---------- загрузка ----------
 async function load() {
   const old = cache.get();
   const since = new Date(Date.now() - 2 * 864e5).toISOString();
-  const [lay, tasks, mail, set, cal, orders, inbox, marks, arch, yes] = await Promise.all([
+  const [lay, tasks, set, cal, orders, inbox, marks, arch, yes] = await Promise.all([
     sb.from('pult_layout').select('version,created_at,note,modules').order('version', { ascending: false }).limit(20),
     sb.from('pult_tasks').select('*').is('archived_at', null).or(`done_at.is.null,done_at.gt.${since}`).order('due_at', { ascending: true, nullsFirst: false }),
-    sb.from('pult_mail_snapshot').select('*').order('taken_at', { ascending: false }).limit(1),
     sb.from('pult_settings').select('stale_after_minutes').limit(1),
     calFromCache().catch((e) => ({ error: e })), // 0.8: снимок целиком (70 суток), без предела функции
     sb.from('asst_orders').select('id,created_at,body,route,status,due_at,result,needs_yes,closed_at')
@@ -93,18 +92,17 @@ async function load() {
     sb.from('pult_tasks').select('id,title,due_at,archived_at').not('archived_at', 'is', null).order('archived_at', { ascending: false }).limit(30),
     sb.rpc('pult_yes_list'), // 0.9: вопросы «нужно-да» без ответа Михаила (только владелец)
   ]);
-  const netFail = [lay, tasks, mail].some((r) => r.error && /fetch|network/i.test(r.error.message || ''));
+  const netFail = [lay, tasks].some((r) => r.error && /fetch|network/i.test(r.error.message || ''));
   state.offline = netFail;
   if (netFail) {
     Object.assign(state, old.state || {});
     state.offline = true;
     return;
   }
-  for (const r of [lay, tasks, mail, set]) if (r.error) throw r.error;
+  for (const r of [lay, tasks, set]) if (r.error) throw r.error;
   state.versions = lay.data;
   state.layout = lay.data[0] || { version: 0, modules: [] };
   state.tasks = tasks.data;
-  state.mail = mail.data[0] || null;
   state.settings = set.data[0] || { stale_after_minutes: 120 };
   state.orders = orders.error ? null : orders.data; // таблицу ведёт ассистент; нет таблицы - панель покажет заглушку
   state.inbox = inbox.error ? null : inbox.data;
@@ -252,8 +250,7 @@ R.today = (m) => {
     : state.calError ? `<div class="banner org">Встречи: ${esc(calStamp())}, ${esc(state.calError)}</div>` : calStale();
   const tile = (n, l, go, red) => `<div class="tile tap" ${go}><div class="big"${red ? ' style="color:var(--red)"' : ''}>${n}</div><div class="mute">${l}</div></div>`;
   return `${yesLine()}<div class="tiles">${tile(left.length, left.length < mt.length ? 'встреч осталось' : 'встреч сегодня', 'data-tab-go="meet"')}
-      ${tile(remNow.length, 'напоми­наний', 'data-tab-go="rem"', remNow.length)}
-      ${tile(state.mail ? state.mail.reply_count : '-', 'писем ответить', 'data-act="mail-sheet"', state.mail?.reply_count)}</div>
+      ${tile(remNow.length, 'напоми­наний', 'data-tab-go="rem"', remNow.length)}</div>
     ${shiftLineToday()}${calWarn}
     <div class="card sec sec-meet"><h2><i>📅</i>Встречи сегодня<span class="cnt">${left.length}</span></h2><ul>${left.map((e) => (e.src === 'own' ? remLine(e) : meetLine(e))).join('') || `<li class="mute">${mt.length + omT.length ? 'Все встречи дня отмечены' : 'Встреч нет'}</li>`}</ul>
     ${past.length ? `<details class="banner org"><summary>Отметь прошедшие встречи: ${past.length}</summary><ul>${past.map((e) => meetLine(e, true)).join('')}</ul></details>` : ''}</div>
@@ -264,22 +261,7 @@ R.today = (m) => {
 };
 R.today.bare = true; // сама рисует свои карточки
 
-R.mail = (m) => {
-  const s = state.mail;
-  if (!s) return '<div class="banner org">Снимков почты ещё нет: агент снимка не запускался.</div>';
-  const age = (Date.now() - new Date(s.taken_at)) / 6e4;
-  const h = omskHour();
-  const night = h >= CFG.nightFrom || h < CFG.nightTo;
-  const stale = age > (state.settings?.stale_after_minutes || 120) && !night;
-  // Ссылки открывают Gmail на нужном ярлыке; сами письма в пульт не попадают (только числа).
-  const gm = (label) => `https://mail.google.com/mail/u/?authuser=${encodeURIComponent(CFG.gmail)}#label/${encodeURIComponent(label).replace(/%20/g, '+')}`;
-  const cell = (n, l, label, red) => `<a class="mcell" href="${gm(label)}" target="_blank" rel="noopener"><div class="big"${red ? ' style="color:var(--red)"' : ''}>${n ?? '-'}</div><div class="mute">${l} ›</div></a>`;
-  return `${stale ? `<div class="banner red">Данные почты устарели: снимок от ${hhmm(new Date(s.taken_at))}, ${Math.round(age / 60)} ч назад. Проверь агента снимка.</div>` : ''}
-    <div class="grid2">${cell(s.reply_count, 'Ответить', 'Статус/1 Ответить', true)}${cell(s.plan_count, 'В плане', 'Статус/3 В плане')}
-      ${cell(s.wait_count, 'Ждём ответа', 'Статус/2 Ждём ответа')}<a class="mcell" href="https://mail.google.com/mail/u/?authuser=${encodeURIComponent(CFG.gmail)}#inbox" target="_blank" rel="noopener"><div class="big">${s.inbox_count ?? '-'}</div><div class="mute">Во входящих ›</div></a></div>
-    <p class="mute">нажми на цифру: откроется Gmail с этими письмами · цифра «Ответить» уменьшается, когда с письма снят ярлык «1 Ответить»</p>
-    <p class="mute">данные от ${hhmm(new Date(s.taken_at))}${night ? ', ночью не обновляется' : ''}</p>`;
-};
+// 0.9.4: почта убрана из пульта по слову Михаила 03.11 (разбор почты не нужен, снимки остановлены).
 
 // Старые виды панелей (до 0.7): остаются рабочими, если их включить в «Панелях»
 function grouped(evs, empty) {
@@ -493,7 +475,6 @@ document.addEventListener('click', (ev) => {
     if (k.slice(0, 7) !== keyOf(y, mo, 1).slice(0, 7)) monOff[mode] += k < keyOf(y, mo, 1) ? -1 : 1; // день соседнего месяца: листаем туда
     renderBoard();
   }
-  if (ev.target.closest('[data-act="mail-sheet"]')) openSheet(`<div class="row" style="margin-bottom:10px"><b class="grow" style="font-size:18px">Почта</b><button class="ghost small" data-act="sheet-close">Закрыть</button></div>${R.mail()}`);
 });
 function shiftMonth(mode, d) {
   monOff[mode] = Math.max(-12, Math.min(12, monOff[mode] + d));
@@ -503,7 +484,7 @@ function shiftMonth(mode, d) {
 }
 
 // ---------- вкладки ----------
-// 0.8: у каждого своя вкладка. Почта - цифра на «Сегодня» (нажал - подробности шторкой).
+// 0.8: у каждого своя вкладка. 0.9.4: цифра почты на «Сегодня» убрана.
 // 0.8.3: вкладка «Поручения» скрыта по слову Михаила 02.11 (за 3 дня 2 поручения, ответ 40-50 мин).
 // Код R.orders и таблицы pult_inbox/asst_orders остаются: вернуть - добавить строку ['orders', 'Поручения', '✉️'].
 // 0.9: вкладка «Да» - вопросы к Михаилу от всех мест (ТЗ 1006).

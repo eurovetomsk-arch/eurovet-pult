@@ -254,7 +254,6 @@ async function all(table: string, cols = "*", order = "id") {
 
 async function dump() {
   const settings = await admin.from("pult_settings").select("allowed_email,stale_after_minutes").maybeSingle();
-  const mail = await admin.from("pult_mail_snapshot").select("*").order("taken_at", { ascending: false }).limit(1);
   return json({
     format: "eurovet-pult-export/1",
     exported_at: new Date().toISOString(),
@@ -265,7 +264,6 @@ async function dump() {
       pult_layout: await all("pult_layout", "*", "version"),
       pult_event_marks: await all("pult_event_marks", "*", "start_at"),
       pult_inbox: await all("pult_inbox"),
-      pult_mail_snapshot_last: mail.data?.[0] ?? null,
       asst_orders: await all("asst_orders"),
     },
   });
