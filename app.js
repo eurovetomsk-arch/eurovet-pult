@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.9.0',
+  version: '0.9.1',
   tz: 'Asia/Omsk',
   gmail: 'eurovet.omsk@gmail.com', // ящик, где ярлыки «Статус/…» (снимок почты)
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
@@ -26,7 +26,9 @@ const calStamp = () => {
   const d = new Date(state.cal.fetched_at), dd = dayKey(d) === today0() ? '' : ' ' + new Intl.DateTimeFormat('ru-RU', { timeZone: CFG.tz, day: '2-digit', month: '2-digit' }).format(d);
   return `обновлено${dd} ${hhmm(d)}`;
 };
-const calStale = () => state.cal && state.cal.configured !== false && (state.cal.stale || Date.now() - new Date(state.cal.fetched_at) > 3 * 36e5)
+// Агент календаря работает 07:13-23:13 Омск: ночной перерыв до 8 ч не считается сбоем (до 09:00 утра).
+const calOld = (ts) => { const age = Date.now() - new Date(ts); return age > 3 * 36e5 && !(omskHour() < 9 && age < 10 * 36e5); };
+const calStale = () => state.cal && state.cal.configured !== false && (state.cal.stale || calOld(state.cal.fetched_at))
   ? `<div class="banner org">Календарь не обновлялся с ${esc(calStamp().replace('обновлено ', ''))}: показан последний снимок.</div>` : '';
 const dayTitle = (key) => {
   const d = new Date(key + 'T12:00:00+06:00');
@@ -134,7 +136,7 @@ async function calFromCache() {
   if (snap.error || rows.error) return { error: snap.error || rows.error };
   if (!snap.data) return { error: 'снимка нет' };
   const events = rows.data.map((r) => ({ title: r.title, start: r.start_at, end: r.end_at, all_day: r.all_day, link: r.link, recurring: r.recurring }));
-  return { configured: true, source: 'cache', events, fetched_at: snap.data.snapshot_at, stale: Date.now() - new Date(snap.data.snapshot_at) > 3 * 36e5 };
+  return { configured: true, source: 'cache', events, fetched_at: snap.data.snapshot_at, stale: calOld(snap.data.snapshot_at) };
 }
 
 // ---------- панели ----------
@@ -248,12 +250,12 @@ R.today = (m) => {
       ${tile(remNow.length, 'напоми­наний', 'data-tab-go="rem"', remNow.length)}
       ${tile(state.mail ? state.mail.reply_count : '-', 'писем ответить', 'data-act="mail-sheet"', state.mail?.reply_count)}</div>
     ${shiftLineToday()}${calWarn}
-    <div class="card"><h2>Встречи сегодня</h2><ul>${left.map((e) => (e.src === 'own' ? remLine(e) : meetLine(e))).join('') || `<li class="mute">${mt.length + omT.length ? 'Все встречи дня отмечены' : 'Встреч нет'}</li>`}${omT.filter((r) => r.done).map((r) => remLine(r)).join('')}</ul>
+    <div class="card sec sec-meet"><h2><i>📅</i>Встречи сегодня<span class="cnt">${left.length}</span></h2><ul>${left.map((e) => (e.src === 'own' ? remLine(e) : meetLine(e))).join('') || `<li class="mute">${mt.length + omT.length ? 'Все встречи дня отмечены' : 'Встреч нет'}</li>`}${omT.filter((r) => r.done).map((r) => remLine(r)).join('')}</ul>
     ${past.length ? `<details class="banner org"><summary>Отметь прошедшие встречи: ${past.length}</summary><ul>${past.map((e) => meetLine(e, true)).join('')}</ul></details>` : ''}</div>
-    <div class="card"><h2>Напоминания</h2>${pushHint()}<ul>${remNow.map((r) => remLine(r, r.day !== today)).join('') || '<li class="mute">На сегодня напоминаний нет</li>'}${remDoneToday.map((r) => remLine(r)).join('')}</ul>
+    <div class="card sec sec-rem"><h2><i>🔔</i>Напоминания<span class="cnt">${remNow.length}</span></h2>${pushHint()}<ul>${remNow.map((r) => remLine(r, r.day !== today)).join('') || '<li class="mute">На сегодня напоминаний нет</li>'}${remDoneToday.map((r) => remLine(r)).join('')}</ul>
     ${noDue.length ? `<details><summary class="mute">Без срока: ${noDue.length}</summary><ul>${noDue.map((r) => remLine(r)).join('')}</ul></details>` : ''}
     <form data-form="quick" class="row" style="margin-top:8px"><input name="title" placeholder="Новое напоминание" maxlength="300" class="grow" autocomplete="off"><button aria-label="Добавить">＋</button></form></div>
-    <div class="card"><h2>Завтра, ${esc(dayTitle(tom).replace(/^Завтра, /, ''))}</h2><ul>${tomM.map((e) => meetLine(e)).join('')}${omTom.map((r) => remLine(r)).join('')}${tomR.map((r) => remLine(r)).join('') || (tomM.length + omTom.length ? '' : '<li class="mute">Пусто</li>')}</ul></div>`;
+    <div class="card sec sec-tom"><h2><i>➡️</i>Завтра, ${esc(dayTitle(tom).replace(/^Завтра, /, ''))}<span class="cnt">${tomM.length + omTom.length + tomR.length}</span></h2><ul>${tomM.map((e) => meetLine(e)).join('')}${omTom.map((r) => remLine(r)).join('')}${tomR.map((r) => remLine(r)).join('') || (tomM.length + omTom.length ? '' : '<li class="mute">Пусто</li>')}</ul></div>`;
 };
 R.today.bare = true; // сама рисует свои карточки
 
@@ -500,7 +502,7 @@ function shiftMonth(mode, d) {
 // 0.8.3: вкладка «Поручения» скрыта по слову Михаила 02.11 (за 3 дня 2 поручения, ответ 40-50 мин).
 // Код R.orders и таблицы pult_inbox/asst_orders остаются: вернуть - добавить строку ['orders', 'Поручения', '✉️'].
 // 0.9: вкладка «Да» - вопросы к Михаилу от всех мест (ТЗ 1006).
-const TABS = [['today', 'Сегодня', '🏠'], ['yes', 'Да', '✅'], ['meet', 'Встречи', '📅'], ['rem', 'Напоминания', '🔔'], ['shift', 'Смены', '🩺']];
+const TABS = [['today', 'Сегодня', '🏠'], ['meet', 'Встречи', '📅'], ['rem', 'Напоминания', '🔔'], ['shift', 'Смены', '🩺'], ['yes', 'Да', '✅']];
 const FIXED = { yes: ['Ждут твоего да', 'yesTab'], meet: ['Встречи', 'meetTab'], rem: ['Напоминания', 'remTab'], shift: ['Мои смены', 'shiftTab'] };
 // Панели из реестра: на «Сегодня» - сама «Сегодня» и свои панели (заметка, события по слову); на «Поручениях» - поручения.
 // Старые панели (список напоминаний, встречи на 7 дней, смены на 7 дней, календарь, почта, клиники) заменены вкладками.
