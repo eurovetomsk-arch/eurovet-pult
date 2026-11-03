@@ -13,7 +13,8 @@
 <link rel="apple-touch-icon" href="icon-180.png">
 <style>
 :root{--bg:#f6f4f5;--card:#fff;--ink:#1f1a1c;--mute:#6b6266;--line:#e7e1e4;--acc:#be185d;--red:#b91c1c;--redbg:#fee2e2;--org:#c2410c;--orgbg:#ffedd5;--ok:#15803d}
-@media (prefers-color-scheme:dark){:root{--bg:#141012;--card:#1f1a1c;--ink:#f3eef0;--mute:#a59ba0;--line:#342c30;--acc:#f472b6;--red:#f87171;--redbg:#3b1515;--org:#fb923c;--orgbg:#3a2210;--ok:#4ade80}}
+/* 0.9.1: тёмная тема выключена по слову Михаила 03.11 (только светлая). Было: @media (prefers-color-scheme:dark){:root{--bg:#141012;--card:#1f1a1c;--ink:#f3eef0;--mute:#a59ba0;--line:#342c30;--acc:#f472b6;--red:#f87171;--redbg:#3b1515;--org:#fb923c;--orgbg:#3a2210;--ok:#4ade80}} */
+:root{color-scheme:light}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
 header{position:sticky;top:0;z-index:5;background:var(--bg);padding:12px 16px 8px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line)}
@@ -21,6 +22,10 @@ header h1{font-size:20px;margin:0;flex:1}
 main{max-width:640px;margin:0 auto;padding:12px 16px 80px}
 .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:0 0 12px}
 .card h2{font-size:15px;margin:0 0 8px;color:var(--mute);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+/* 0.9.1: блоки «Сегодня» с цветной полосой слева (встречи синие, напоминания оранжевые, завтра фиолетовое) */
+.sec{border-left:6px solid var(--c)}.sec-meet{--c:#2563eb}.sec-rem{--c:#ea580c}.sec-tom{--c:#7c3aed}
+.sec h2{display:flex;align-items:center;gap:8px;font-size:19px;text-transform:none;letter-spacing:0;color:var(--c);font-weight:800;margin-bottom:10px}
+.sec h2 i{font-style:normal}.sec .cnt{margin-left:auto;font-size:14px;background:color-mix(in srgb,var(--c) 14%,transparent);color:var(--c);border-radius:20px;padding:2px 10px}
 .big{font-size:34px;font-weight:700;line-height:1}
 .row{display:flex;gap:12px;align-items:center}
 .grow{flex:1;min-width:0}
