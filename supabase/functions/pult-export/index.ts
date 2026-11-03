@@ -156,6 +156,12 @@ function allDay(iso: string): string {
 async function iphoneMirror(raw: string, src: string) {
   const rows: { title: string; due_at: string | null }[] = [];
   const samples: string[] = []; // сырые даты с телефона в журнал: так видно, в каком виде их шлёт Команда
+  // 03.11.2026: когда на iPhone есть выполненные напоминания с меткой, Команда приклеивает их заметки
+  // («…[ассистент-N]») перед списком «Не забыть». Всё до последней метки - не зеркало, отрезаем.
+  // Иначе «Химчистка» превращалась в «[ассистент-50]Химчистка», а настоящая закрывалась.
+  const lastTag = [...raw.matchAll(/\[ассистент-\d{1,12}\]/g)].pop();
+  let junk = 0;
+  if (lastTag) { const cut = (lastTag.index ?? 0) + lastTag[0].length; junk = raw.slice(0, cut).split(/\r?\n/).length; raw = raw.slice(cut); }
   for (const line of raw.split(/\r?\n/)) {
     const i = line.lastIndexOf("|");
     const title = (i >= 0 ? line.slice(0, i) : line).trim().slice(0, 300);
@@ -167,6 +173,8 @@ async function iphoneMirror(raw: string, src: string) {
   const { data: cur, error } = await admin.from("pult_tasks").select("id,title,due_at,owner_id,phone_sig")
     .eq("phone_src", src).is("done_at", null).is("archived_at", null).limit(2000);
   if (error) return { added: 0, moved: 0, closed: 0, error: error.message, samples };
+  // Пустой список после обрезки при наличии метки - сбой Команды, а не «всё выполнено»: ничего не закрываем
+  if (lastTag && !rows.length) return { added: 0, moved: 0, closed: 0, junk, samples };
   const left = [...(cur ?? [])];
   const norm = (x: string | null) => (x ? new Date(x).toISOString() : null);
   // Поправка времени для одного напоминания: у некоторых на iPhone внутри чужой часовой пояс,
@@ -204,7 +212,7 @@ async function iphoneMirror(raw: string, src: string) {
     const { data } = await admin.from("pult_tasks").update({ done_at: new Date().toISOString() }).in("id", left.map((t) => t.id)).is("done_at", null).select("id");
     closed = data?.length ?? 0;
   }
-  return { added, moved, closed, samples };
+  return { added, moved, closed, samples, ...(junk ? { junk } : {}) };
 }
 async function iphoneDone(req: Request) {
   const ct = req.headers.get("content-type") ?? "";

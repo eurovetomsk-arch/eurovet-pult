@@ -5,7 +5,7 @@
 const CFG = {
   url: 'https://ikxmzapfmgqnnrsttuxc.supabase.co',
   key: 'sb_publishable_T8ccLgWCaguS1EABck2d0A_-KnjFd9K', // публичный ключ, доступ режет RLS
-  version: '0.9.1',
+  version: '0.9.2',
   tz: 'Asia/Omsk',
   gmail: 'eurovet.omsk@gmail.com', // ящик, где ярлыки «Статус/…» (снимок почты)
   nightFrom: 22.5, // снимок почты ночью не обновляется: 22:30-07:30 по Омску плашку не краснеем
@@ -236,7 +236,7 @@ R.today = (m) => {
   const left = mt.filter((e) => !isMarked(e)).concat(omT.filter((r) => !r.done));
   const rem = reminders();
   const remNow = rem.filter((r) => !r.done && r.day && (r.day === today || (r.src === 'own' && r.day < today))); // прошедшие события Google не тащим в «сегодня»
-  const remDoneToday = rem.filter((r) => r.done && r.src === 'own' && r.t.done_at && dayKey(new Date(r.t.done_at)) === today);
+  // 0.9.2: выполненные не показываем зачёркнутыми, они просто уходят с экрана (слово Михаила 03.11)
   const noDue = rem.filter((r) => !r.done && !r.day);
   const from = dayKey(new Date(Date.now() - 3 * 864e5));
   const past = meetings().filter((e) => !e.all_day && evDay(e) < today && evDay(e) >= from && !state.marks?.[evKey(e)]);
@@ -250,9 +250,9 @@ R.today = (m) => {
       ${tile(remNow.length, 'напоми­наний', 'data-tab-go="rem"', remNow.length)}
       ${tile(state.mail ? state.mail.reply_count : '-', 'писем ответить', 'data-act="mail-sheet"', state.mail?.reply_count)}</div>
     ${shiftLineToday()}${calWarn}
-    <div class="card sec sec-meet"><h2><i>📅</i>Встречи сегодня<span class="cnt">${left.length}</span></h2><ul>${left.map((e) => (e.src === 'own' ? remLine(e) : meetLine(e))).join('') || `<li class="mute">${mt.length + omT.length ? 'Все встречи дня отмечены' : 'Встреч нет'}</li>`}${omT.filter((r) => r.done).map((r) => remLine(r)).join('')}</ul>
+    <div class="card sec sec-meet"><h2><i>📅</i>Встречи сегодня<span class="cnt">${left.length}</span></h2><ul>${left.map((e) => (e.src === 'own' ? remLine(e) : meetLine(e))).join('') || `<li class="mute">${mt.length + omT.length ? 'Все встречи дня отмечены' : 'Встреч нет'}</li>`}</ul>
     ${past.length ? `<details class="banner org"><summary>Отметь прошедшие встречи: ${past.length}</summary><ul>${past.map((e) => meetLine(e, true)).join('')}</ul></details>` : ''}</div>
-    <div class="card sec sec-rem"><h2><i>🔔</i>Напоминания<span class="cnt">${remNow.length}</span></h2>${pushHint()}<ul>${remNow.map((r) => remLine(r, r.day !== today)).join('') || '<li class="mute">На сегодня напоминаний нет</li>'}${remDoneToday.map((r) => remLine(r)).join('')}</ul>
+    <div class="card sec sec-rem"><h2><i>🔔</i>Напоминания<span class="cnt">${remNow.length}</span></h2>${pushHint()}<ul>${remNow.map((r) => remLine(r, r.day !== today)).join('') || '<li class="mute">На сегодня напоминаний нет</li>'}</ul>
     ${noDue.length ? `<details><summary class="mute">Без срока: ${noDue.length}</summary><ul>${noDue.map((r) => remLine(r)).join('')}</ul></details>` : ''}
     <form data-form="quick" class="row" style="margin-top:8px"><input name="title" placeholder="Новое напоминание" maxlength="300" class="grow" autocomplete="off"><button aria-label="Добавить">＋</button></form></div>
     <div class="card sec sec-tom"><h2><i>➡️</i>Завтра, ${esc(dayTitle(tom).replace(/^Завтра, /, ''))}<span class="cnt">${tomM.length + omTom.length + tomR.length}</span></h2><ul>${tomM.map((e) => meetLine(e)).join('')}${omTom.map((r) => remLine(r)).join('')}${tomR.map((r) => remLine(r)).join('') || (tomM.length + omTom.length ? '' : '<li class="mute">Пусто</li>')}</ul></div>`;
